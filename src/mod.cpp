@@ -884,8 +884,7 @@ static bool usable_in_front() {
   void* pawn = local_pawn();
   // the game's own interaction prompt ("Press LMB to pick up Battery", doors, beds...) drives this list
   if (void* pc = local_pc()) {
-    if (get<TArray<void*>>(pc, "AvailableInteractions").Num > 0) return true;
-    if (get<FString>(pc, "PickupTargetName").Num > 1) return true;
+    return get<TArray<void*>>(pc, "AvailableInteractions").Num > 0;  // (PickupTargetName is never cleared: don't use it)
   }
   FVector eye; FRotator rot;
   view_point(eye, rot);
