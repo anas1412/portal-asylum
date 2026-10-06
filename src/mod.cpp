@@ -12,6 +12,7 @@
 #include "ue.h"
 using namespace ue;
 #include "mesh.h"
+#include "sound.h"
 
 static Host* H;
 static FILE* g_log;
@@ -136,12 +137,12 @@ static void* make_rt(int w, int h, FLinearColor c) {
   add_to_root(rt);
   return rt;
 }
-static void* make_mic(void* parent, void* tex) {
+static void* make_mic(void* parent, void* tex, FName param = {-2, 0}) {
   void* mic = construct("MaterialInstanceConstant");
   if (!mic) return nullptr;
   add_to_root(mic);
   Call(mic, "SetParent").arg("NewParent", parent).go();
-  Call(mic, "SetTextureParameterValue").arg("ParameterName", g_tex_param).arg("Value", tex).go();
+  Call(mic, "SetTextureParameterValue").arg("ParameterName", param.Index == -2 ? g_tex_param : param).arg("Value", tex).go();
   return mic;
 }
 
@@ -368,6 +369,7 @@ static void fire(int i) {
   FVector eye; FRotator rot;
   view_point(eye, rot);
   FVector dir = rot_dir(rot);
+  snd::play(i ? "fire1" : "fire0", 0.6f);
   Hit h;
   FVector from = eye;
   for (int k = 0; k < 8; ++k) {  // shots fly through gates, fences, grates and glass
@@ -375,7 +377,7 @@ static void fire(int i) {
     if (!h.ok || !see_through(pawn, h, dir)) break;
     from = h.loc + dir * 4;
   }
-  if (!h.ok) { mlog("fire %d: nothing hit (eye %.0f %.0f %.0f dir %.2f %.2f %.2f)", i, eye.X, eye.Y, eye.Z, dir.X, dir.Y, dir.Z); return; }
+  if (!h.ok) { snd::play("invalid", 0.5f); mlog("fire %d: nothing hit (eye %.0f %.0f %.0f dir %.2f %.2f %.2f)", i, eye.X, eye.Y, eye.Z, dir.X, dir.Y, dir.Z); return; }
   FVector n = norm(h.n), up;
   if (std::fabs(n.Z) < 0.7f) up = norm(FVector{0, 0, 1} - n * n.Z);
   else up = norm(dir - n * dot(dir, n));
@@ -388,10 +390,12 @@ static void fire(int i) {
       if (gap > -40 && gap < 110) at.Z -= gap - 1;
     }
   }
-  if (!surface_ok(pawn, at, n, right, up, c)) { mlog("fire %d: surface too small at %.0f %.0f %.0f", i, h.loc.X, h.loc.Y, h.loc.Z); return; }
+  if (!surface_ok(pawn, at, n, right, up, c)) {
+    snd::play("invalid", 0.5f); mlog("fire %d: surface too small at %.0f %.0f %.0f", i, h.loc.X, h.loc.Y, h.loc.Z); return; }
   Portal& o = g_p[1 - i];
   if (o.open && dot(o.n, n) > 0.9f && std::fabs(dot(c - o.loc, n)) < 10 && std::fabs(dot(c - o.loc, right)) < PW * 0.95f &&
-      std::fabs(dot(c - o.loc, up)) < PH * 0.95f) { mlog("fire %d: overlaps other portal", i); return; }
+      std::fabs(dot(c - o.loc, up)) < PH * 0.95f) {
+    snd::play("invalid", 0.5f); mlog("fire %d: overlaps other portal", i); return; }
   Portal& p = g_p[i];
   if (!p.surf) p.surf = spawn_mesh(g_surf_mic[i]);
   if (!p.frame) p.frame = spawn_mesh(g_rim_mic[i]);
@@ -400,6 +404,7 @@ static void fire(int i) {
   place_mesh(p.surf, c + n * 1.2f, r, {0.4f, PW, PH});
   place_mesh(p.frame, c + n * 0.6f, r, {0.4f, PW + 20, PH + 26});
   p.open = true; p.loc = c; p.n = n; p.right = right; p.up = up;
+  snd::play(i ? "open1" : "open0", 0.55f);
   mlog("portal %d at %.0f %.0f %.0f n %.2f %.2f %.2f", i, c.X, c.Y, c.Z, n.X, n.Y, n.Z);
 }
 
@@ -455,9 +460,129 @@ static void try_teleport(void* pawn, float now) {
     set_view(pawn, dir_rot(through(A, B, rot_dir(cr))));
     if (is_a(pawn, find_class("OLHero"))) Call(pawn, "ResetAfterTeleport").go();
     g_cooldown[pawn] = now + 0.3f;
+    if (pawn == local_pawn()) snd::play("enter", 0.6f);
+    else if (void* me = local_pawn()) {
+      float dist = len(get<FVector>(me, "Location") - loc);
+      if (dist < 2500) snd::play("enter", 0.6f * (1 - dist / 2500));
+    }
     mlog("teleport %s via %d: vel %.0f -> %.0f", obj_name(pawn).c_str(), i, len(vel), len(nv));
     return;
   }
+}
+
+// ---------------------------------------------------------------- the gun (Portal 2's v_portalgun, in engine)
+// tools/p2gun.py converts the model from the player's own Portal 2 install into cache/gun.bin; here it replaces
+// EngineMeshes.Cube's geometry, gets a lit material (the camcorder's), and is attached to Miles's camera bone.
+static void *g_gun_mesh, *g_gun_mic, *g_gun_comp, *g_gun_owner;
+static bool g_gun_failed, g_gun_shown = true;
+static FVector g_gun_off{33, 11, -10};  // forward, right, up from the eye
+static FRotator g_gun_rot{-364, 728, 16384};  // -2 / 4 / 90 degrees: upright, aimed at the crosshair
+static void* g_gun_tex;
+static float g_gun_scale = 1.8f;  // Source units -> Outlast, sized by eye to sit like Portal 2's viewmodel
+
+static bool load_gun() {
+  if (g_gun_mesh) return true;
+  if (g_gun_failed) return false;
+  g_gun_failed = true;
+  FILE* f = fopen((std::string(H->root) + "/cache/gun.bin").c_str(), "rb");
+  if (!f) { mlog("no cache/gun.bin: run tools/p2gun.py"); return false; }
+  char tag[4];
+  int nv = 0, ni = 0, aw = 0, ah = 0;
+  bool ok = fread(tag, 1, 4, f) == 4 && fread(&nv, 4, 1, f) && fread(&ni, 4, 1, f) && fread(&aw, 4, 1, f) && fread(&ah, 4, 1, f);
+  std::vector<float> raw((size_t)nv * 8);
+  std::vector<unsigned short> idx(ni);
+  std::vector<unsigned> atlas((size_t)aw * ah);
+  ok = ok && fread(raw.data(), 4, raw.size(), f) == raw.size() && fread(idx.data(), 2, idx.size(), f) == idx.size() &&
+       fread(atlas.data(), 4, atlas.size(), f) == atlas.size();
+  fclose(f);
+  if (!ok || memcmp(tag, "OLPG", 4)) { mlog("bad gun.bin"); return false; }
+  float lo[3] = {1e9, 1e9, 1e9}, hi[3] = {-1e9, -1e9, -1e9};
+  for (int i = 0; i < nv; ++i)
+    for (int k = 0; k < 3; ++k) lo[k] = std::fmin(lo[k], raw[i * 8 + k]), hi[k] = std::fmax(hi[k], raw[i * 8 + k]);
+  std::vector<BuildVert> v;
+  for (int i = 0; i < nv; ++i) {
+    float* r = &raw[i * 8];
+    float x = r[0] - (lo[0] + hi[0]) / 2, y = r[1] - (lo[1] + hi[1]) / 2, z = r[2] - (lo[2] + hi[2]) / 2;
+    // the model points along +Z: turn it to point along +X (a proper rotation, winding unchanged)
+    FVector p{z, y, -x}, n = norm(FVector{r[5], r[4], -r[3]});
+    FVector t = norm(cross(n, std::fabs(n.Z) < 0.9f ? FVector{0, 0, 1} : FVector{1, 0, 0}));
+    v.push_back(make_vert(p, n, t, r[6], r[7]));
+  }
+  void* cube = find_named("StaticMesh", "Cube");
+  if (!cube || !rebuild_mesh(cube, v, idx)) { mlog("gun mesh rebuild failed"); return false; }
+  void* tex = g_gun_tex = make_texture(aw, ah, atlas.data());
+  void* parent = find_named("Material", "handycam_mat");
+  if (parent) g_gun_mic = make_mic(parent, tex, find_name("Diffuse"));
+  else g_gun_mic = make_mic(g_emissive, tex);
+  g_gun_mesh = cube;
+  g_gun_failed = false;
+  mlog("gun: %d verts %d tris, atlas %dx%d, material %s", nv, ni / 3, aw, ah, parent ? "handycam_mat" : "emissive");
+  return true;
+}
+
+static void rot_axes(FRotator r, FVector& X, FVector& Y, FVector& Z) {
+  float p = r.Pitch * U2R, y = r.Yaw * U2R, ro = r.Roll * U2R;
+  float SP = std::sin(p), CP = std::cos(p), SY = std::sin(y), CY = std::cos(y), SR = std::sin(ro), CR = std::cos(ro);
+  X = {CP * CY, CP * SY, SP};
+  Y = {SR * SP * CY - CR * SY, SR * SP * SY + CR * CY, -SR * CP};
+  Z = {-(CR * SP * CY + SR * SY), CY * SR - CR * SP * SY, CR * CP};
+}
+struct FQuat { float X, Y, Z, W; };
+static FVector quat_rot(FQuat q, FVector v) {
+  FVector u{q.X, q.Y, q.Z};
+  return u * (2 * dot(u, v)) + v * (q.W * q.W - dot(u, u)) + cross(u, v) * (2 * q.W);
+}
+
+// Place the gun in camera space (g_gun_off: forward/right/up from the eye, g_gun_rot relative to the view),
+// converted into the camera bone's frame it is attached to.
+static void pose_gun() {
+  void* pawn = local_pawn();
+  void* mesh = pawn ? get<void*>(pawn, "Mesh") : nullptr;
+  if (!g_gun_comp || !mesh) return;
+  FName bone = find_name("Hero-Camera");
+  FVector bl = Call(mesh, "GetBoneLocation").arg("BoneName", bone).go().ret<FVector>();
+  FQuat bq = Call(mesh, "GetBoneQuaternion").arg("BoneName", bone).go().ret<FQuat>();
+  FVector Bx = quat_rot(bq, {1, 0, 0}), By = quat_rot(bq, {0, 1, 0}), Bz = quat_rot(bq, {0, 0, 1});
+  FVector eye; FRotator vr;
+  view_point(eye, vr);
+  FVector Cx, Cy, Cz, gx, gy, gz;
+  rot_axes(vr, Cx, Cy, Cz);
+  rot_axes(g_gun_rot, gx, gy, gz);
+  auto world = [&](FVector a) { return Cx * a.X + Cy * a.Y + Cz * a.Z; };
+  auto in_bone = [&](FVector w) { return FVector{dot(w, Bx), dot(w, By), dot(w, Bz)}; };
+  FVector P = eye + world(g_gun_off);
+  FVector rel = in_bone(P - bl);
+  FRotator rr = basis_rot(in_bone(world(gx)), in_bone(world(gy)), in_bone(world(gz)));
+  Call(g_gun_comp, "SetTranslation").arg("NewTranslation", rel).go();
+  Call(g_gun_comp, "SetRotation").arg("NewRotation", rr).go();
+  Call(g_gun_comp, "SetScale").arg("NewScale", g_gun_scale).go();
+}
+
+static bool gun_ready();
+static void update_gun() {
+  void* pawn = local_pawn();
+  if (!pawn || !is_a(pawn, find_class("OLHero")) || !init_resources() || !load_gun()) return;
+  if (g_gun_owner != pawn) { g_gun_owner = pawn; g_gun_comp = nullptr; }
+  if (!g_gun_comp) {
+    void* comp = construct("StaticMeshComponent", pawn);
+    void* mesh = get<void*>(pawn, "Mesh");
+    if (!comp || !mesh) return;
+    Call(comp, "SetStaticMesh").arg("NewMesh", g_gun_mesh).go();
+    Call(comp, "SetMaterial").arg("ElementIndex", 0).arg("Material", g_gun_mic).go();
+    set_bool(comp, "CastShadow", false);
+    Call(mesh, "AttachComponent").arg("Component", comp).arg("BoneName", find_name("Hero-Camera"))
+        .arg("RelativeLocation", g_gun_off).arg("RelativeRotation", g_gun_rot)
+        .arg("RelativeScale", FVector{1, 1, 1}).go();
+    Call(comp, "SetDepthPriorityGroup").arg<u8>("NewDepthPriorityGroup", 2 /*SDPG_Foreground*/).go();
+    // lit exactly like Miles's own body (a runtime component has no light environment of its own)
+    if (void* le = get<void*>(pawn, "LightEnvironment")) Call(comp, "SetLightEnvironment").arg("NewLightEnvironment", le).go();
+    g_gun_comp = comp;
+    g_gun_shown = true;
+    pose_gun();
+    mlog("gun attached to %s", obj_name(pawn).c_str());
+  }
+  bool show = gun_ready();
+  if (show != g_gun_shown) { Call(g_gun_comp, "SetHidden").arg_bool("NewHidden", !show).go(); g_gun_shown = show; }
 }
 
 // ---------------------------------------------------------------- gun state + input
@@ -467,6 +592,7 @@ static bool gun_ready() {
   void* pc = local_pc();
   if (get_bool(pc, "bCinematicMode")) return false;
   if (get<u8>(pawn, "CamcorderState") != 0) return false;  // camcorder raised or moving
+  if (get<u8>(pawn, "SpecialMove") != 0) return false;     // climbing, vaulting, doors, hiding, grabbed...
   return true;
 }
 
@@ -621,6 +747,40 @@ static void run_command(const std::string& line) {
     // where is the mesh's own Bounds? print floats of the UStaticMesh between 0x70 and 0x160
     for (int off = 0x70; off < 0x170; off += 16)
       mlog("    mesh+0x%x: %g %g %g %g", off, *(float*)((u8*)m + off), *(float*)((u8*)m + off + 4), *(float*)((u8*)m + off + 8), *(float*)((u8*)m + off + 12));
+  } else if (cmd == "matparams") {  // matparams <substring>: texture/vector/scalar parameters of matching materials
+    FName t2 = find_name("MaterialExpressionTextureSampleParameter2D"), vp = find_name("MaterialExpressionVectorParameter"),
+          sp = find_name("MaterialExpressionScalarParameter");
+    auto& O = Objects();
+    for (int i = 0; i < O.Num; ++i) {
+      void* o = O.Data[i];
+      if (!o) continue;
+      void* c = obj_class(o);
+      if (!(name_is(c, t2) || name_is(c, vp) || name_is(c, sp))) continue;
+      void* mat = P(o, O_Outer);
+      std::string path = obj_path(mat);
+      if (path.find(arg) == std::string::npos || is_default(o)) continue;
+      mlog("  %s  %s %s", path.c_str(), obj_name(c).c_str() + 18, name_str(get<FName>(o, "ParameterName")).c_str());
+    }
+  } else if (cmd == "gunmat") {  // gunmat emissive|handycam|<material name> [dpg]
+    char name[128] = {0};
+    int dpg = 2;
+    sscanf(arg.c_str(), "%127s %d", name, &dpg);
+    void* parent = std::string(name) == "emissive" ? g_emissive : find_named("Material", std::string(name) == "handycam" ? "handycam_mat" : name);
+    if (parent && g_gun_comp) {
+      void* mic = make_mic(parent, g_gun_tex, parent == g_emissive ? g_tex_param : find_name("Diffuse"));
+      Call(g_gun_comp, "SetMaterial").arg("ElementIndex", 0).arg("Material", mic).go();
+      Call(g_gun_comp, "SetDepthPriorityGroup").arg<u8>("NewDepthPriorityGroup", (u8)dpg).go();
+      if (void* le = get<void*>(local_pawn(), "LightEnvironment")) Call(g_gun_comp, "SetLightEnvironment").arg("NewLightEnvironment", le).go();
+      mlog("gun material %s dpg %d", obj_name(parent).c_str(), dpg);
+    }
+  } else if (cmd == "gunpose") {  // gunpose x y z pitch yaw roll scale (degrees): tune the held gun
+    float x, y, z, p, yw, r, sc;
+    if (sscanf(arg.c_str(), "%f %f %f %f %f %f %f", &x, &y, &z, &p, &yw, &r, &sc) == 7 && g_gun_comp) {
+      g_gun_off = {x, y, z};
+      g_gun_rot = {(int)(p / 360 * 65536), (int)(yw / 360 * 65536), (int)(r / 360 * 65536)};
+      g_gun_scale = sc;
+      pose_gun();
+    }
   } else if (cmd == "flip") {  // flip <x> <y> <capmode>
     sscanf(arg.c_str(), "%d %d %d", &g_flipx, &g_flipy, &g_capmode);
   } else if (cmd == "approach") {  // approach <i>: stand Miles in front of portal i, moving into it (tests)
@@ -673,10 +833,13 @@ static void poll_commands() {
 extern "C" void mod_init(Host* h) {
   H = h;
   g_log = fopen((run_dir() + "/mod.log").c_str(), "a");
-  mlog("mod loaded");
+  snd::load(std::string(H->root) + "/cache/sounds");
+  H->set_audio_mix(snd::mix);
+  mlog("mod loaded, %d sounds", (int)snd::bank.size());
 }
 extern "C" void mod_unload() {
   destroy_portals();
+  if (g_gun_comp && g_gun_owner) if (void* mesh = get<void*>(g_gun_owner, "Mesh")) Call(mesh, "DetachComponent").arg("Component", g_gun_comp).go();
   mlog("mod unloading");
   if (g_log) fclose(g_log);
   g_log = nullptr;
@@ -684,13 +847,14 @@ extern "C" void mod_unload() {
 
 extern "C" void mod_tick(void*, float) {
   static long n = 0;
-  if (n++ == 0) mlog("tick live, %d objects", Objects().Num);
+  if (n++ == 0) { mlog("tick live, %d objects", Objects().Num); }
   poll_commands();
   void* pc = local_pc();
   if (!pc) return;
   void* wi = get<void*>(pc, "WorldInfo");
   if (wi != g_world) { g_world = wi; forget_portals(); g_cooldown.clear(); mlog("world %s", wi ? obj_path(wi).c_str() : "-"); }
   if (void* pi = get<void*>(pc, "PlayerInput")) H->hook_input(&(*(void***)pi)[78]);
+  update_gun();
   if (wi && (g_p[0].open || g_p[1].open)) update_views();
   if (!wi || !g_p[0].open || !g_p[1].open) return;
   float now = get<float>(wi, "TimeSeconds");

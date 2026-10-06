@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <strings.h>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -49,7 +50,7 @@ inline FName find_name(const char* s) {  // existing names only
   auto& N = Names();
   for (int i = 0; i < N.Num; ++i) {
     u8* e = N.Data[i];
-    if (e && !(*(int*)(e + 8) & 1) && strcmp((char*)(e + 0x18), s) == 0) { cache[s] = i; return {i, 0}; }
+    if (e && !(*(int*)(e + 8) & 1) && strcasecmp((char*)(e + 0x18), s) == 0) { cache[s] = i; return {i, 0}; }
   }
   return {-1, 0};
 }
@@ -95,10 +96,9 @@ inline void* find_field(void* strct, const char* name) {
   std::string key = std::to_string((uintptr_t)strct) + name;
   auto it = cache.find(key);
   if (it != cache.end()) return it->second;
-  FName n = find_name(name);
-  for (void* s = strct; s; s = P(s, O_Super))
+  for (void* s = strct; s; s = P(s, O_Super))  // names compare case-insensitively, like FName
     for (void* c = P(s, O_Children); c; c = P(c, O_Next))
-      if (name_is(c, n)) return cache[key] = c;
+      if (strcasecmp(obj_name(c).c_str(), name) == 0) return cache[key] = c;
   mlog("!! field %s not found on %s", name, obj_name(strct).c_str());
   return cache[key] = nullptr;
 }

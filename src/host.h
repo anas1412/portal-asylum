@@ -8,9 +8,13 @@ struct FName { int Index, Number; };
 typedef void (*TickFn)(void* engine, float dt);
 typedef unsigned (*InputKeyFn)(void* self, int ctrl, FName key, int event, float amount, unsigned gamepad);
 
+// mixes into the game's own audio buffer (SDL format code, rate, channels of Outlast's device)
+typedef void (*AudioMixFn)(unsigned char* out, int len, int freq, unsigned short format, int channels);
+
 struct Host {
-  const char* root;                 // ~/outlast-portal-gun
-  bool (*hook_input)(void** slot);  // route a PlayerInput vtable InputKey slot through mod_input
+  const char* root;                       // ~/outlast-portal-gun
+  bool (*hook_input)(void** slot);        // route a PlayerInput vtable InputKey slot through mod_input
+  void (*set_audio_mix)(AudioMixFn fn);   // mix extra sounds into Outlast's audio callback (nullptr to stop)
 };
 
 typedef void (*ModInitFn)(Host*);

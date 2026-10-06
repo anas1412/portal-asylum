@@ -32,3 +32,13 @@
   - `src/olportal.cpp` hooks `UOLEngine::Tick` via its vtable slot and interposes `SDL_GL_SwapWindow` for screenshots.
   - Commands are appended to `run/cmd`: `exec`, `dump`, `shot`, `objs`. Output goes to `run/mod.log`.
   - `dev-run.sh` launches the game windowed at 1280x720.
+
+## Gotchas (so far)
+1. **Commands were never read.** **Cause:** a `__attribute__((constructor))` ran before C++ static init, which then reset a `std::string` global. **Fix:** use POD buffers for anything the constructor sets.
+2. **`ProcessEvent` silently did nothing** for Trace, Spawn, SetLocation and other natives. **Cause:** it returns early when `UFunction::iNative` (+0xdc) is non-zero. **Fix:** clear it for the duration of the call (`ue::Call::go`).
+3. **Crash on hot reload.** **Cause:** inline-function statics in a header are `STB_GNU_UNIQUE`, so the reloaded `.so` bound to the old (destroyed) copy. **Fix:** build the mod with `-fno-gnu-unique`.
+4. **The view pitch won't stay put.** **Cause:** Outlast keeps the real view in `OLHeroCamera` (`ViewWS`/`ViewCS` CamView: Loc, Yaw, Pitch in degrees) and rewrites `Controller.Rotation` every frame. **Fix:** write the camera too (`set_view`).
+5. **Lit runtime meshes render black.** **Cause:** no `LightEnvironment`. **Fix:** give the component the hero's (`SetLightEnvironment`).
+6. **Two copies of Outlast were left running.** **Cause:** `kill $(pgrep -f OLGame.x86_64)` matched the agent's own shell command line first. **Fix:** use `pgrep -x OLGame.x86_64` (process name only); `dev-run.sh` refuses to start a second copy.
+7. **SDL refuses a second audio device** ("Audio device already open"; the game's bundled SDL2 is old). **Fix:** the loader wraps the game's own `SDL_OpenAudioDevice` callback (Wwise output: 48 kHz s16, 6 channels) and the mod mixes into that buffer.
+8. **Field names compare case-insensitively** (`SetPhysics.newPhysics`), so `find_field` uses `strcasecmp` on the strings.

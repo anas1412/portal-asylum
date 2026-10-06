@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include "host.h"
 #include "syms.h"
@@ -22,6 +23,8 @@ static ModInputFn g_input;
 static TickFn g_orig_tick;
 static InputKeyFn g_orig_input;
 
+static void set_audio_mix(AudioMixFn fn);
+
 static void* patch_slot(void** slot, void* fn) {
   long pg = sysconf(_SC_PAGESIZE);
   void* page = (void*)((uintptr_t)slot & ~(uintptr_t)(pg - 1));
@@ -34,6 +37,7 @@ static void* patch_slot(void** slot, void* fn) {
 
 static void load_mod() {
   if (g_lib) {
+    set_audio_mix(nullptr);
     if (auto un = (ModUnloadFn)dlsym(g_lib, "mod_unload")) un();
     g_tick = nullptr; g_swap = nullptr; g_input = nullptr;
     dlclose(g_lib);
@@ -77,6 +81,33 @@ static bool hook_input(void** slot) {
   return true;
 }
 
+// Outlast's audio: wrap the Wwise SDL callback so the mod can mix sounds into the same device
+struct AudioSpec { int freq; unsigned short format; unsigned char channels, silence; unsigned short samples, pad; unsigned size;
+                   void (*cb)(void*, unsigned char*, int); void* user; };
+static void (*g_game_audio)(void*, unsigned char*, int);
+static AudioSpec g_aspec;
+static std::mutex g_amx;
+static AudioMixFn g_mix;
+static void audio_wrap(void* user, unsigned char* out, int len) {
+  g_game_audio(user, out, len);
+  std::lock_guard<std::mutex> l(g_amx);
+  if (g_mix) g_mix(out, len, g_aspec.freq, g_aspec.format, g_aspec.channels);
+}
+static void set_audio_mix(AudioMixFn fn) { std::lock_guard<std::mutex> l(g_amx); g_mix = fn; }
+
+extern "C" unsigned SDL_OpenAudioDevice(const char* dev, int capture, const AudioSpec* want, AudioSpec* have, int allowed) {
+  static auto real = (unsigned (*)(const char*, int, const AudioSpec*, AudioSpec*, int))dlsym(RTLD_NEXT, "SDL_OpenAudioDevice");
+  if (capture || !want || !want->cb || g_game_audio) return real(dev, capture, want, have, allowed);
+  AudioSpec w = *want, got{};
+  g_game_audio = w.cb;
+  w.cb = audio_wrap;
+  unsigned id = real(dev, capture, &w, &got, allowed);
+  g_aspec = allowed ? got : w;
+  if (have) { *have = got; have->cb = want->cb; have->user = want->user; }
+  fprintf(stderr, "[olportal] game audio %d Hz fmt 0x%x ch %d\n", g_aspec.freq, g_aspec.format, g_aspec.channels);
+  return id;
+}
+
 extern "C" void SDL_GL_SwapWindow(void* win) {
   static auto real = (void (*)(void*))dlsym(RTLD_NEXT, "SDL_GL_SwapWindow");
   if (g_swap) g_swap(win);
@@ -91,6 +122,7 @@ __attribute__((constructor)) static void init() {
   mkdir((std::string(g_root) + "/run").c_str(), 0755);
   g_host.root = g_root;
   g_host.hook_input = hook_input;
+  g_host.set_audio_mix = set_audio_mix;
   void** vt = (void**)(A_VT_UOLEngine + 16);
   for (int i = 0; i < 200; ++i)
     if (vt[i] == (void*)A_UOLEngine_Tick) {
