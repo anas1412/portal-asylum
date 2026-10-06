@@ -469,6 +469,7 @@ static bool see_through(void* pawn, const Hit& h, FVector dir) {
   return false;
 }
 
+static void convert_props_over(const Portal& A);
 static void fire(int i) {
   void* pawn = local_pawn();
   if (!pawn || !init_resources()) return;
@@ -532,6 +533,7 @@ static void fire(int i) {
   p.age = 0;
   p.open = true; p.loc = c; p.n = n; p.right = right; p.up = up;
   snd::play(i ? "open1" : "open0", 0.55f);
+  if (n.Z > 0.7f) convert_props_over(p);
   mlog("portal %d at %.0f %.0f %.0f n %.2f %.2f %.2f", i, c.X, c.Y, c.Z, n.X, n.Y, n.Z);
 }
 
@@ -565,6 +567,12 @@ static void try_teleport(void* pawn, float now) {
     float d = dot(rel, A.n), r = dot(rel, A.right), u = dot(rel, A.up), e = extent_along(pawn, A.n);
     bool floor = A.n.Z > 0.7f;
     float er = r / (PW * 0.5f), eu = u / (PH * 0.5f);
+    static float why_t = 0;  // why an enemy near a portal didn't go through (for tuning)
+    if (pawn != local_pawn() && d < e + 80 && std::fabs(r) < PW && std::fabs(u) < PH && now > why_t) {
+      why_t = now + 1;
+      mlog("enemy %s near %d: d %.0f r %.0f u %.0f e %.0f vel.n %.0f phys %d", obj_name(pawn).c_str(), i, d, r, u, e,
+           dot(vel, A.n), get<u8>(pawn, "Physics"));
+    }
     // floor/ceiling: centre over the oval; wall: the body overlaps the opening (Outlast floors sit high on the capsule)
     float hh = PH * 0.5f, h = extent_along(pawn, FVector{0, 0, 1});
     bool inside = std::fabs(A.n.Z) > 0.7f ? er * er + eu * eu < 1
@@ -759,6 +767,105 @@ static void update_gun() {
   // the view turns relative to the camera bone (Outlast's free look), so re-derive the bone-space pose every frame
   if (show) pose_gun();
   if (show != g_gun_shown) { Call(g_gun_comp, "SetHidden").arg_bool("NewHidden", !show).go(); g_gun_shown = show; }
+}
+
+// ---------------------------------------------------------------- props: things fall through portals too
+// Outlast's props are fixed level meshes. When a floor portal opens under a small one, swap it for a physics copy
+// (KActorSpawnable, same mesh/materials/transform) and hide the original; physics objects then go through portals.
+static std::vector<void*> g_props;  // physics actors we watch (converted props + the level's own KActors)
+static float g_props_scan;
+
+static void convert_props_over(const Portal& A) {
+  void* smc_cls = find_class("StaticMeshComponent");
+  void* pawn = local_pawn();
+  auto& O = Objects();
+  int n = 0;
+  for (int i = 0; i < O.Num; ++i) {
+    void* c = O.Data[i];
+    if (!c || !is_a(c, smc_cls) || is_default(c) || !get_bool(c, "bAttached") || get_bool(c, "HiddenGame")) continue;
+    void* owner = get<void*>(c, "Owner");
+    if (!owner || !get_bool(owner, "bStatic") || is_portal_actor(owner)) continue;  // only fixed scenery
+    float* b = field_ptr<float>(c, "Bounds");
+    FVector o{b[0], b[1], b[2]}, e{b[3], b[4], b[5]};
+    if (e.X > 110 || e.Y > 110 || e.Z > 110 || e.Z < 4) continue;  // must fit through; skip decals/flat trims
+    FVector rel = o - A.loc;
+    float bottom = dot(rel, A.n) - e.Z, r = dot(rel, A.right) / (PW * 0.5f), u = dot(rel, A.up) / (PH * 0.5f);
+    if (bottom < -6 || bottom > 30 || r * r + u * u > 1) continue;  // resting on the floor over the oval
+    void* mesh = get<void*>(c, "StaticMesh");
+    if (!mesh) continue;
+    float* m = field_ptr<float>(c, "LocalToWorld");  // rows: X, Y, Z axes (scaled), origin
+    FVector X{m[0], m[1], m[2]}, Y{m[4], m[5], m[6]}, Z{m[8], m[9], m[10]}, T{m[12], m[13], m[14]};
+    void* k = Call(pawn, "Spawn").arg("SpawnClass", find_class("KActorSpawnable")).arg("SpawnLocation", T)
+                  .arg("SpawnRotation", basis_rot(norm(X), norm(Y), norm(Z))).arg_bool("bNoCollisionFail", true).go().ret<void*>();
+    if (!k) continue;
+    Call(k, "SetStaticMesh").arg("NewMesh", mesh).arg("NewScale3D", FVector{1, 1, 1}).go();
+    Call(k, "SetDrawScale3D").arg("NewScale3D", FVector{len(X), len(Y), len(Z)}).go();
+    void* kc = get<void*>(k, "StaticMeshComponent");
+    int ne = Call(c, "GetNumElements").go().ret<int>();
+    for (int el = 0; el < ne; ++el)
+      Call(kc, "SetMaterial").arg("ElementIndex", el).arg("Material", Call(c, "GetMaterial").arg("ElementIndex", el).go().ret<void*>()).go();
+    Call(c, "SetHidden").arg_bool("NewHidden", true).go();
+    Call(c, "SetActorCollision").arg_bool("NewCollideActors", false).arg_bool("NewBlockActors", false).go();
+    Call(c, "SetBlockRigidBody").arg_bool("bNewBlockRigidBody", false).go();
+    Call(k, "SetPhysics").arg<u8>("newPhysics", 10 /*PHYS_RigidBody*/).go();
+    Call(kc, "WakeRigidBody").go();
+    g_props.push_back(k);
+    ++n;
+    mlog("  prop %s -> physics", obj_name(mesh).c_str());
+  }
+  if (n) mlog("converted %d prop(s) over portal", n);
+}
+
+static void watch_props(float now) {
+  if (now < g_props_scan) return;
+  g_props_scan = now + 1;
+  void* ka = find_class("KActor");
+  auto& O = Objects();
+  for (int i = 0; i < O.Num; ++i) {
+    void* o = O.Data[i];
+    if (!o || !is_a(o, ka) || is_default(o) || get_bool(o, "bDeleteMe")) continue;
+    if (std::find(g_props.begin(), g_props.end(), o) == g_props.end()) g_props.push_back(o);
+  }
+}
+
+static void try_teleport_prop(void* k, float now) {
+  auto cd = g_cooldown.find(k);
+  if (cd != g_cooldown.end() && now < cd->second) return;
+  void* kc = get<void*>(k, "StaticMeshComponent");
+  if (!kc || get<u8>(k, "Physics") != 10) return;
+  float* b = field_ptr<float>(kc, "Bounds");
+  FVector o{b[0], b[1], b[2]}, e{b[3], b[4], b[5]}, vel = get<FVector>(k, "Velocity");
+  for (int i = 0; i < 2; ++i) {
+    const Portal &A = g_p[i], &B = g_p[1 - i];
+    FVector rel = o - A.loc;
+    float d = dot(rel, A.n), r = dot(rel, A.right), u = dot(rel, A.up);
+    float ext = std::fabs(A.n.X) * e.X + std::fabs(A.n.Y) * e.Y + std::fabs(A.n.Z) * e.Z;
+    bool floor = A.n.Z > 0.7f;
+    float er = r / (PW * 0.5f), eu = u / (PH * 0.5f);
+    auto ex = g_exited.find(k);
+    if (ex != g_exited.end() && ex->second == i) {
+      if (er * er + eu * eu < 1 && d < ext + 60) continue;
+      g_exited.erase(ex);
+    }
+    if (er * er + eu * eu > 1 || d < -20 || d > ext + 15) continue;
+    if (!floor && dot(vel, A.n) > -20) continue;
+    float extB = std::fabs(B.n.X) * e.X + std::fabs(B.n.Y) * e.Y + std::fabs(B.n.Z) * e.Z;
+    FVector p = B.loc + B.right * std::fmax(-PW * 0.25f, std::fmin(PW * 0.25f, -r)) + B.up * std::fmax(-PH * 0.25f, std::fmin(PH * 0.25f, u)) + B.n * (extB + 12);
+    FVector nv = through(A, B, vel);
+    if (dot(nv, B.n) < 250) nv = nv + B.n * (250 - dot(nv, B.n));
+    if (B.n.Z > 0.7f) nv = nv + B.up * 120;  // out of a floor portal: tip it sideways so it lands beside the portal
+    Call(kc, "SetRBPosition").arg("NewPos", p).go();
+    Call(kc, "SetRBLinearVelocity").arg("NewVel", nv).arg_bool("bAddToCurrent", false).go();
+    Call(kc, "WakeRigidBody").go();
+    g_cooldown[k] = now + 0.25f;
+    g_exited[k] = 1 - i;
+    if (void* me = local_pawn()) {
+      float dist = len(get<FVector>(me, "Location") - o);
+      if (dist < 2500) snd::play("enter", 0.5f * (1 - dist / 2500));
+    }
+    mlog("prop %s through %d", obj_name(obj_class(k)).c_str(), i);
+    return;
+  }
 }
 
 // ---------------------------------------------------------------- gun state + input
@@ -957,6 +1064,25 @@ static void run_command(const std::string& line) {
       g_gun_scale = sc;
       pose_gun();
     }
+  } else if (cmd == "near") {  // near <radius>: movable actors around Miles (class, physics, distance)
+    float R = arg.empty() ? 800 : atof(arg.c_str());
+    std::string arg2 = arg.find(' ') == std::string::npos ? "" : arg.substr(arg.find(' ') + 1);
+    void* me = local_pawn();
+    if (!me) return;
+    FVector ml = get<FVector>(me, "Location");
+    void* actor_cls = find_class("Actor");
+    auto& O = Objects();
+    int k = 0;
+    for (int i = 0; i < O.Num && k < 60; ++i) {
+      void* o = O.Data[i];
+      if (!o || !is_a(o, actor_cls) || is_default(o) || get_bool(o, "bDeleteMe")) continue;
+      if (arg2 == "phys" && get<u8>(o, "Physics") != 10 && !is_a(o, find_class("Pawn"))) continue;
+      float d = len(get<FVector>(o, "Location") - ml);
+      if (d > R) continue;
+      mlog("  %p %-28s phys %d d %.0f inPawnList? world %d", o, obj_name(obj_class(o)).c_str(), get<u8>(o, "Physics"), d,
+           get_bool(o, "bWorldGeometry"));
+      ++k;
+    }
   } else if (cmd == "fps") {  // average frame rate since the last "fps"
     mlog("fps %.1f over %.0f frames, mod %.3f ms/frame", g_fps_n / (g_fps_acc > 0 ? g_fps_acc : 1), g_fps_n,
          g_fps_n > 0 ? g_mod_ms / g_fps_n : 0);
@@ -1066,7 +1192,7 @@ static void tick(float dt) {
   void* pc = local_pc();
   if (!pc) return;
   void* wi = get<void*>(pc, "WorldInfo");
-  if (wi != g_world) { g_world = wi; forget_portals(); g_cooldown.clear(); g_exited.clear(); mlog("world %s", wi ? obj_path(wi).c_str() : "-"); }
+  if (wi != g_world) { g_world = wi; forget_portals(); g_cooldown.clear(); g_exited.clear(); g_props.clear(); g_props_scan = 0; mlog("world %s", wi ? obj_path(wi).c_str() : "-"); }
   if (void* pi = get<void*>(pc, "PlayerInput")) H->hook_input(&(*(void***)pi)[78]);
   update_gun();
   if (wi && (g_p[0].open || g_p[1].open)) { update_views(); animate_portals(dt); }
@@ -1074,6 +1200,9 @@ static void tick(float dt) {
   float now = get<float>(wi, "TimeSeconds");
   for (void* p = get<void*>(wi, "PawnList"); p; p = get<void*>(p, "NextPawn"))
     if (!get_bool(p, "bDeleteMe")) try_teleport(p, now);
+  watch_props(now);
+  for (void* k : g_props)
+    if (!get_bool(k, "bDeleteMe")) try_teleport_prop(k, now);
 }
 
 extern "C" void mod_swap(void* win) {
