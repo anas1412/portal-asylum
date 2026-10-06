@@ -636,8 +636,8 @@ static void update_gun() {
     Call(comp, "SetMaterial").arg("ElementIndex", 0).arg("Material", g_gun_mic).go();
     set_bool(comp, "CastShadow", false);
     Call(mesh, "AttachComponent").arg("Component", comp).arg("BoneName", find_name("Hero-Camera"))
-        .arg("RelativeLocation", g_gun_off).arg("RelativeRotation", g_gun_rot)
-        .arg("RelativeScale", FVector{1, 1, 1}).go();
+        .arg("RelativeLocation", FVector{0, 0, 0}).arg("RelativeRotation", FRotator{0, 0, 0})
+        .arg("RelativeScale", FVector{1, 1, 1}).go();  // identity: pose_gun sets the bone-space transform
     Call(comp, "SetDepthPriorityGroup").arg<u8>("NewDepthPriorityGroup", 2 /*SDPG_Foreground*/).go();
     // lit exactly like Miles's own body (a runtime component has no light environment of its own)
     if (void* le = get<void*>(pawn, "LightEnvironment")) Call(comp, "SetLightEnvironment").arg("NewLightEnvironment", le).go();
@@ -646,11 +646,10 @@ static void update_gun() {
     pose_gun();
     mlog("gun attached to %s", obj_name(pawn).c_str());
   }
-  if (g_recoil > 0) {
-    g_recoil = g_recoil < 0.02f ? 0 : g_recoil * 0.82f;  // per tick
-    pose_gun();
-  }
+  if (g_recoil > 0) g_recoil = g_recoil < 0.02f ? 0 : g_recoil * 0.82f;  // per tick
   bool show = gun_ready();
+  // the view turns relative to the camera bone (Outlast's free look), so re-derive the bone-space pose every frame
+  if (show) pose_gun();
   if (show != g_gun_shown) { Call(g_gun_comp, "SetHidden").arg_bool("NewHidden", !show).go(); g_gun_shown = show; }
 }
 
