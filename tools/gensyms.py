@@ -6,7 +6,7 @@ WANT={
  'GEngine':'GEngine','GNames':'FName::Names','GObjects':'UObject::GObjObjects',
  'VT_UOLEngine':'vtable for UOLEngine','UOLEngine_Tick':'UOLEngine::Tick(float)',
  'StaticConstructObject':'UObject::StaticConstructObject(UClass*, UObject*, FName, unsigned long, UObject*, FOutputDevice*, UObject*, FObjectInstancingGraph*)',
- 'AddToRoot':'UObject::AddToRoot()','GetTransientPackage':'UObject::GetTransientPackage()',
+ 'AddToRoot':'UObject::AddToRoot()','RemoveFromRoot':'UObject::RemoveFromRoot()','GetTransientPackage':'UObject::GetTransientPackage()',
  'appRealloc':'appRealloc(void*, unsigned int, unsigned int)','FlushRenderingCommands':'FlushRenderingCommands()',
  'SM_ReleaseResources':'UStaticMesh::ReleaseResources()','SM_InitResources':'UStaticMesh::InitResources()',
  'SMVB_Init':'FStaticMeshVertexBuffer::Init(TArray<FStaticMeshBuildVertex, FDefaultAllocator> const&, unsigned int)',

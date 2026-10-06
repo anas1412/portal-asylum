@@ -7,6 +7,7 @@
 #define A_UOLEngine_Tick 0xfd0550ULL
 #define A_StaticConstructObject 0x265e8b0ULL
 #define A_AddToRoot 0x264cce0ULL
+#define A_RemoveFromRoot 0x264ccf0ULL
 #define A_GetTransientPackage 0x264ccc0ULL
 #define A_appRealloc 0x26212e0ULL
 #define A_FlushRenderingCommands 0x1a10380ULL

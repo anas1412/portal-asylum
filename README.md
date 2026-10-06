@@ -29,7 +29,7 @@ Nothing from either game is shipped.
    ```
 4. Steam → Outlast → Properties → Launch Options:
    ```
-   LD_PRELOAD="$LD_PRELOAD:/home/<you>/outlast-portal-gun/build/libolportal.so" %command%
+   LD_PRELOAD="$LD_PRELOAD:/home/<you>/outlast-portal-gun/build/libolportal.so" systemd-run --user --scope --quiet -p MemoryMax=6G -p MemorySwapMax=1G %command%
    ```
    - It appends to Steam's own `LD_PRELOAD`, so the overlay keeps working.
    - To uninstall, clear the box. No game file is ever changed.

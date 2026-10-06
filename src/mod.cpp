@@ -50,7 +50,18 @@ static void* construct(const char* cls, void* outer = nullptr) {
   if (!outer) outer = ((void* (*)())A_GetTransientPackage)();
   return ((SCOFn)A_StaticConstructObject)(c, outer, FName{0, 0}, 0, nullptr, &g_out, nullptr, nullptr);
 }
-static void add_to_root(void* o) { if (o) ((void (*)(void*))A_AddToRoot)(o); }
+// everything the mod roots (textures, render targets, materials) is un-rooted on unload so the engine can free it
+static std::vector<void*> g_rooted;
+static void add_to_root(void* o) {
+  if (!o) return;
+  ((void (*)(void*))A_AddToRoot)(o);
+  g_rooted.push_back(o);
+}
+void add_root(void* o) { add_to_root(o); }  // for mesh.h
+static void release_rooted() {
+  for (void* o : g_rooted) ((void (*)(void*))A_RemoveFromRoot)(o);
+  g_rooted.clear();
+}
 static void* find_named(const char* cls, const char* name) {  // object by class + object name
   FName c = find_name(cls), n = find_name(name);
   auto& O = Objects();
@@ -1180,6 +1191,7 @@ extern "C" void mod_init(Host* h) {
   mlog("mod loaded, %d sounds", (int)snd::bank.size());
 }
 extern "C" void mod_unload() {
+  release_rooted();
   destroy_portals();
   if (g_gun_comp && g_gun_owner) if (void* mesh = get<void*>(g_gun_owner, "Mesh")) Call(mesh, "DetachComponent").arg("Component", g_gun_comp).go();
   mlog("mod unloading");

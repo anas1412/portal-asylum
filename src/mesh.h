@@ -78,7 +78,8 @@ inline void* make_texture(int w, int h, const unsigned* bgra) {
   extern void* cdo(const char*);
   void* t = Call(cdo("Texture2D"), "Create").arg("InSizeX", w).arg("InSizeY", h).arg<u8>("InFormat", 2).go().ret<void*>();
   if (!t) return nullptr;
-  ((void (*)(void*))A_AddToRoot)(t);
+  extern void add_root(void*);
+  add_root(t);
   auto& mips = *(TArray<u8*>*)((u8*)t + 0x140);
   if (mips.Num < 1) return t;
   void* bulk = mips.Data[0];
