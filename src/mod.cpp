@@ -379,7 +379,8 @@ static void update_view(int i, FVector eye) {
   void* c = g_cap[i];
   if (!c) return;
   bool facing = dot(eye - A.loc, A.n) > 1;
-  Call(c, "SetEnabled").arg_bool("bEnable", facing).go();
+  static bool enabled[2] = {true, true};
+  if (facing != enabled[i]) { Call(c, "SetEnabled").arg_bool("bEnable", facing).go(); enabled[i] = facing; }
   if (!facing) return;
   FVector E = B.loc + through(A, B, eye - A.loc);
   FVector F = B.n, U = B.up, R = B.right;
