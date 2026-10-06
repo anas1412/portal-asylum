@@ -882,6 +882,11 @@ static bool gun_ready() {
 // anything Miles could use right in front of him (doors, pickups, beds, lockers): LMB uses instead of firing
 static bool usable_in_front() {
   void* pawn = local_pawn();
+  // the game's own interaction prompt ("Press LMB to pick up Battery", doors, beds...) drives this list
+  if (void* pc = local_pc()) {
+    if (get<TArray<void*>>(pc, "AvailableInteractions").Num > 0) return true;
+    if (get<FString>(pc, "PickupTargetName").Num > 1) return true;
+  }
   FVector eye; FRotator rot;
   view_point(eye, rot);
   FVector dir = rot_dir(rot);
@@ -1083,6 +1088,10 @@ static void run_command(const std::string& line) {
            get_bool(o, "bWorldGeometry"));
       ++k;
     }
+  } else if (cmd == "usable") {
+    void* pc = local_pc();
+    mlog("AvailableInteractions %d PickupTargetName len %d -> usable %d", get<TArray<void*>>(pc, "AvailableInteractions").Num,
+         get<FString>(pc, "PickupTargetName").Num, usable_in_front());
   } else if (cmd == "fps") {  // average frame rate since the last "fps"
     mlog("fps %.1f over %.0f frames, mod %.3f ms/frame", g_fps_n / (g_fps_acc > 0 ? g_fps_acc : 1), g_fps_n,
          g_fps_n > 0 ? g_mod_ms / g_fps_n : 0);
