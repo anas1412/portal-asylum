@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <cstdarg>
 #include <cstdio>
+#include <chrono>
 #include <cstdlib>
 #include <map>
 #include <string>
@@ -121,6 +122,7 @@ struct Portal {
 static Portal g_p[2];
 static float g_recoil;            // 1 right after a shot, decays to 0
 static float g_fps_acc, g_fps_n;  // frame-rate measurement ("fps" command)
+static double g_mod_ms;           // time spent in mod_tick since the last "fps"
 static void* g_world;
 static void *g_cube, *g_emissive, *g_rim_mic[2], *g_surf_mic[2];
 static void *g_view_rt[2], *g_view_mic[2];  // what portal i shows: the world beyond the other portal
@@ -849,8 +851,10 @@ static void run_command(const std::string& line) {
       pose_gun();
     }
   } else if (cmd == "fps") {  // average frame rate since the last "fps"
-    mlog("fps %.1f over %.0f frames", g_fps_n / (g_fps_acc > 0 ? g_fps_acc : 1), g_fps_n);
+    mlog("fps %.1f over %.0f frames, mod %.3f ms/frame", g_fps_n / (g_fps_acc > 0 ? g_fps_acc : 1), g_fps_n,
+         g_fps_n > 0 ? g_mod_ms / g_fps_n : 0);
     g_fps_acc = g_fps_n = 0;
+    g_mod_ms = 0;
   } else if (cmd == "flip") {  // flip <x> <y> <capmode>
     sscanf(arg.c_str(), "%d %d %d", &g_flipx, &g_flipy, &g_capmode);
   } else if (cmd == "approach") {  // approach <i>: stand Miles in front of portal i, moving into it (tests)
@@ -941,7 +945,13 @@ extern "C" void mod_unload() {
   g_log = nullptr;
 }
 
+static void tick(float dt);
 extern "C" void mod_tick(void*, float dt) {
+  auto t0 = std::chrono::steady_clock::now();
+  tick(dt);
+  g_mod_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+static void tick(float dt) {
   g_fps_acc += dt; g_fps_n += 1;
   static long n = 0;
   if (n++ == 0) { mlog("tick live, %d objects", Objects().Num); }
