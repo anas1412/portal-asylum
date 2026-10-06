@@ -16,6 +16,7 @@ Nothing from either game is shipped.
 | Right mouse | Orange portal |
 | Middle mouse | Camcorder (the gun hides while it's up) |
 | F | Night vision (unchanged) |
+| U | Open any door on/off (on by default; off relocks the doors it opened) |
 
 ## Setup (Linux)
 1. Requirements: Outlast (native Linux), Portal 2 installed (only for its files), Python 3, `uv`, `ffmpeg` and `g++`.

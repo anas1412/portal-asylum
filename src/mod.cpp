@@ -880,6 +880,43 @@ static void try_teleport_prop(void* k, float now) {
   }
 }
 
+// ---------------------------------------------------------------- open any door (U toggles)
+// Clears OLDoor.bLocked / bBlocked on every door, including ones the game locks later; switching it off relocks
+// exactly the doors this changed.
+static bool g_unlock_all = true;
+static std::map<void*, std::pair<bool, bool>> g_unlocked;  // door -> its original (locked, blocked)
+static float g_door_scan;
+
+static void update_doors(float now) {
+  if (now < g_door_scan) return;
+  g_door_scan = now + 0.5f;
+  if (!g_unlock_all) return;
+  void* door_cls = find_class("OLDoor");
+  auto& O = Objects();
+  for (int i = 0; i < O.Num; ++i) {
+    void* d = O.Data[i];
+    if (!d || !is_a(d, door_cls) || is_default(d) || get_bool(d, "bDeleteMe")) continue;
+    bool locked = get_bool(d, "bLocked"), blocked = get_bool(d, "bBlocked");
+    if (!locked && !blocked) continue;
+    if (!g_unlocked.count(d)) g_unlocked[d] = {locked, blocked};
+    set_bool(d, "bLocked", false);
+    set_bool(d, "bBlocked", false);
+    mlog("door %s unlocked", obj_name(d).c_str());
+  }
+}
+
+static void toggle_doors() {
+  g_unlock_all = !g_unlock_all;
+  if (!g_unlock_all) {
+    for (auto& [d, st] : g_unlocked)
+      if (!get_bool(d, "bDeleteMe")) { set_bool(d, "bLocked", st.first); set_bool(d, "bBlocked", st.second); }
+    g_unlocked.clear();
+  }
+  g_door_scan = 0;
+  snd::play(g_unlock_all ? "open1" : "close", 0.5f);
+  mlog("open any door: %s", g_unlock_all ? "on" : "off");
+}
+
 // ---------------------------------------------------------------- gun state + input
 static bool gun_ready() {
   void* pawn = local_pawn();
@@ -921,6 +958,8 @@ static bool usable_in_front() {
 extern "C" unsigned mod_input(void* self, int ctrl, FName key, int ev, float amount, unsigned gamepad, InputKeyFn orig) {
   static FName L = find_name("LeftMouseButton"), R = find_name("RightMouseButton"), M = find_name("MiddleMouseButton");
   if (key.Index == M.Index) return orig(self, ctrl, R, ev, amount, gamepad);  // camcorder on middle mouse
+  static FName U = find_name("U");
+  if (key.Index == U.Index) { if (ev == 0) toggle_doors(); return 1; }
   bool lmb = key.Index == L.Index, rmb = key.Index == R.Index;
   if ((lmb || rmb) && gun_ready()) {
     static bool lmb_used = false;  // a press that went to "use" keeps its release there too
@@ -1213,9 +1252,10 @@ static void tick(float dt) {
   void* pc = local_pc();
   if (!pc) return;
   void* wi = get<void*>(pc, "WorldInfo");
-  if (wi != g_world) { g_world = wi; forget_portals(); g_cooldown.clear(); g_exited.clear(); g_props.clear(); g_props_scan = 0; mlog("world %s", wi ? obj_path(wi).c_str() : "-"); }
+  if (wi != g_world) { g_world = wi; forget_portals(); g_cooldown.clear(); g_exited.clear(); g_props.clear(); g_props_scan = 0; g_unlocked.clear(); g_door_scan = 0; mlog("world %s", wi ? obj_path(wi).c_str() : "-"); }
   if (void* pi = get<void*>(pc, "PlayerInput")) H->hook_input(&(*(void***)pi)[78]);
   update_gun();
+  if (wi) update_doors(get<float>(wi, "TimeSeconds"));
   if (wi && (g_p[0].open || g_p[1].open)) { update_views(); animate_portals(dt); }
   if (!wi || !g_p[0].open || !g_p[1].open) return;
   float now = get<float>(wi, "TimeSeconds");
