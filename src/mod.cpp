@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <cstdarg>
 #include <cstdio>
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <map>
@@ -78,10 +79,11 @@ static void view_point(FVector& loc, FRotator& rot) {
 
 struct Hit { void* actor; FVector loc, n; bool ok; void *mat, *phys; };
 struct TraceHitInfo { void *mat, *phys; int item, level; FName bone; void* comp; };
+static int g_trace_flags;  // Actor.Trace ExtraTraceFlags (1 = TRACEFLAG_Bullet: per-poly, sees walls without collision)
 static Hit trace(void* from_actor, FVector start, FVector end, bool actors = false) {
   Call c(from_actor, "Trace");
   c.arg("TraceEnd", end).arg("TraceStart", start).arg_bool("bTraceActors", actors).arg("Extent", FVector{0, 0, 0});
-  c.arg("ExtraTraceFlags", 0).go();
+  c.arg("ExtraTraceFlags", g_trace_flags).go();
   Hit h;
   h.actor = c.ret<void*>();
   h.loc = c.ret<FVector>("HitLocation");
@@ -113,7 +115,16 @@ static bool is_portal_actor(void* a);
 // First solid hit along start->end through the actor trace (some walls are StaticMeshCollectionActor pieces the plain
 // world trace misses). Skips ghosts: triggers and hidden volumes (a trace that starts inside one keeps hitting it at
 // the start, so jump ahead), pawns, and the portals themselves.
+static Hit trace_solid_once(void* src, FVector start, FVector end);
 static Hit trace_solid(void* src, FVector start, FVector end) {
+  Hit h = trace_solid_once(src, start, end);
+  if (h.ok) return h;
+  g_trace_flags = 1;  // high walls Miles can't reach often have no collision: hit the visible polygons instead
+  h = trace_solid_once(src, start, end);
+  g_trace_flags = 0;
+  return h;
+}
+static Hit trace_solid_once(void* src, FVector start, FVector end) {
   FVector dir = norm(end - start);
   void* pawn_cls = find_class("Pawn");
   for (int k = 0; k < 64; ++k) {
@@ -127,6 +138,56 @@ static Hit trace_solid(void* src, FVector start, FVector end) {
   }
   return Hit{};
 }
+// Last resort for things with no collision at all (high walls, ceilings behind windows): test the ray against the
+// visible triangles of every static mesh component whose bounds it crosses (Actor.TraceComponent, complex collision).
+static Hit visual_trace(void* src, FVector start, FVector end) {
+  FVector d = end - start;
+  float L = len(d);
+  FVector dir = d * (1 / L);
+  void* smc_cls = find_class("StaticMeshComponent");
+  void* pawn_cls = find_class("Pawn");
+  std::vector<std::pair<float, void*>> cands;
+  auto& O = Objects();
+  for (int i = 0; i < O.Num; ++i) {
+    void* o = O.Data[i];
+    if (!o || !is_a(o, smc_cls) || is_default(o) || !get_bool(o, "bAttached") || get_bool(o, "HiddenGame")) continue;
+    void* owner = get<void*>(o, "Owner");
+    if (!owner || is_portal_actor(owner) || is_a(owner, pawn_cls)) continue;
+    float* b = field_ptr<float>(o, "Bounds");  // Origin, BoxExtent
+    float t0 = 0, t1 = L;
+    bool hit = true;
+    for (int k = 0; k < 3 && hit; ++k) {
+      float s0 = (&start.X)[k], dk = (&dir.X)[k], lo = b[k] - b[3 + k], hi = b[k] + b[3 + k];
+      if (std::fabs(dk) < 1e-6f) { hit = s0 >= lo && s0 <= hi; continue; }
+      float a = (lo - s0) / dk, c = (hi - s0) / dk;
+      if (a > c) std::swap(a, c);
+      t0 = std::fmax(t0, a); t1 = std::fmin(t1, c);
+      hit = t0 <= t1;
+    }
+    if (hit) cands.push_back({t0, o});
+  }
+  std::sort(cands.begin(), cands.end(), [](auto& a, auto& b) { return a.first < b.first; });
+  Hit best{};
+  float best_t = L;
+  for (size_t k = 0; k < cands.size() && k < 96 && cands[k].first < best_t; ++k) {
+    Call c(src, "TraceComponent");
+    c.arg("InComponent", cands[k].second).arg("TraceEnd", end).arg("TraceStart", start).arg("Extent", FVector{0, 0, 0})
+        .arg_bool("bComplexCollision", true).go();
+    if (!c.ret_bool()) continue;
+    FVector hl = c.ret<FVector>("HitLocation");
+    float t = dot(hl - start, dir);
+    if (t < best_t && t > 1) {
+      best_t = t;
+      best.ok = true;
+      best.loc = hl;
+      best.n = norm(c.ret<FVector>("HitNormal"));
+      best.actor = get<void*>(cands[k].second, "Owner");
+    }
+  }
+  mlog("  visual trace: %d candidate meshes, %s", (int)cands.size(), best.ok ? obj_name(obj_class(best.actor)).c_str() : "nothing");
+  return best;
+}
+
 // level geometry only (movers and props count as a miss)
 static Hit trace_world(void* src, FVector start, FVector end) {
   Hit h = trace_solid(src, start, end);
@@ -363,26 +424,33 @@ static void update_views() {
 
 // ---------------------------------------------------------------- firing
 static bool surface_ok(void* pawn, FVector c, FVector n, FVector right, FVector up, FVector& out) {
-  // every corner of the portal must sit on the same flat surface; nudge inwards up to a few times
+  // every corner of the portal should sit on the same surface; nudge inwards to fit. If it never fully fits, still
+  // place it at the best spot found as long as its centre is on the surface (portals overhang edges, not refuse).
+  FVector best = c;
+  int best_bad = 5;
   for (int it = 0; it < 24; ++it) {
     FVector shift{0, 0, 0};
-    bool bad = false;
+    int bad = 0;
     for (int sr = -1; sr <= 1; sr += 2)
       for (int su = -1; su <= 1; su += 2) {
         FVector p = c + right * (sr * PW * 0.5f) + up * (su * PH * 0.5f);
         Hit h = trace_world(pawn, p + n * 14, p - n * 14);
-        if (!h.ok || std::fabs(dot(h.loc - c, n)) > 10 || dot(h.n, n) < 0.8f) {  // brick, trim, uneven floors are fine
-          if (it == 0) mlog("  corner %+d %+d: %s depth %.1f ndot %.2f %s", sr, su, h.ok ? "hit" : "MISS",
-                            h.ok ? dot(h.loc - c, n) : 0.f, h.ok ? dot(h.n, n) : 0.f, h.ok ? obj_name(obj_class(h.actor)).c_str() : "");
-          bad = true;
+        if (!h.ok || std::fabs(dot(h.loc - c, n)) > 10 || dot(h.n, n) < 0.8f) {
+          ++bad;
           shift = shift - right * (sr * 8.f) - up * (su * 8.f);
         }
       }
-    if (!bad) { out = c; return true; }
-    if (len(shift) < 1) return false;
+    Hit mid = trace_world(pawn, c + n * 14, c - n * 14);
+    bool centre_ok = mid.ok && std::fabs(dot(mid.loc - c, n)) < 10;
+    if (centre_ok && bad < best_bad) { best_bad = bad; best = c; }
+    if (bad == 0) break;
+    if (len(shift) < 1) break;
     c = c + shift;
   }
-  return false;
+  if (best_bad > 4) return false;
+  if (best_bad) mlog("  placing with %d corner(s) overhanging", best_bad);
+  out = best;
+  return true;
 }
 
 // Something the shot should pass through: see-through materials by name, or anything thin (bars, panes, signs)
@@ -423,6 +491,8 @@ static void fire(int i) {
     }
     break;
   }
+  bool visual = false;
+  if (!h.ok) { h = visual_trace(pawn, from, eye + dir * 5000); visual = h.ok; }  // nearby only: no portals on far skylines
   if (!h.ok) { snd::play("invalid", 0.5f); mlog("fire %d: nothing hit (eye %.0f %.0f %.0f dir %.2f %.2f %.2f)", i, eye.X, eye.Y, eye.Z, dir.X, dir.Y, dir.Z); return; }
   mlog("  aim hit %s (%s) at %.0f %.0f %.0f n %.2f %.2f %.2f", obj_name(obj_class(h.actor)).c_str(), h.mat ? obj_name(h.mat).c_str() : "-",
        h.loc.X, h.loc.Y, h.loc.Z, h.n.X, h.n.Y, h.n.Z);
@@ -438,7 +508,8 @@ static void fire(int i) {
       if (gap > -40 && gap < 110) at.Z -= gap - 1;
     }
   }
-  if (!surface_ok(pawn, at, n, right, up, c)) {
+  if (visual) c = at;  // a surface with no collision: nothing to fit against, place it where it was hit
+  else if (!surface_ok(pawn, at, n, right, up, c)) {
     snd::play("invalid", 0.5f); mlog("fire %d: surface too small at %.0f %.0f %.0f", i, h.loc.X, h.loc.Y, h.loc.Z); return; }
   Portal& o = g_p[1 - i];
   if (o.open && dot(o.n, n) > 0.9f && std::fabs(dot(c - o.loc, n)) < 10 && std::fabs(dot(c - o.loc, right)) < PW * 0.95f &&
