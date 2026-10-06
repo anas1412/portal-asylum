@@ -377,10 +377,20 @@ static void fire(int i) {
   g_recoil = 1;
   Hit h;
   FVector from = eye;
-  for (int k = 0; k < 8; ++k) {  // shots fly through gates, fences, grates and glass
-    h = trace(pawn, from, eye + dir * 30000);
-    if (!h.ok || !see_through(pawn, h, dir)) break;
-    from = h.loc + dir * 4;
+  void* pawn_cls = find_class("Pawn");
+  for (int k = 0; k < 10; ++k) {  // shots fly through gates, fences, grates, glass, people and the portals themselves
+    h = trace(pawn, from, eye + dir * 30000, true);
+    if (!h.ok) break;
+    bool ours = false;
+    for (auto& p : g_p) ours |= h.actor == p.surf || h.actor == p.frame;
+    bool ghost = get_bool(h.actor, "bHidden") || !get_bool(h.actor, "bBlockActors");  // triggers, volumes, clip
+    if (ours || ghost || is_a(h.actor, pawn_cls) || see_through(pawn, h, dir)) { from = h.loc + dir * 4; continue; }
+    if (!get_bool(h.actor, "bWorldGeometry")) {  // doors, props, movers: Portal 2 won't put a portal on those
+      snd::play("invalid", 0.5f);
+      mlog("fire %d: hit movable %s", i, obj_name(obj_class(h.actor)).c_str());
+      return;
+    }
+    break;
   }
   if (!h.ok) { snd::play("invalid", 0.5f); mlog("fire %d: nothing hit (eye %.0f %.0f %.0f dir %.2f %.2f %.2f)", i, eye.X, eye.Y, eye.Z, dir.X, dir.Y, dir.Z); return; }
   FVector n = norm(h.n), up;
