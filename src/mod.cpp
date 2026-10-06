@@ -861,6 +861,25 @@ static void run_command(const std::string& line) {
       Call(pawn, "SetPhysics").arg<u8>("newPhysics", 2).go();
       set<FVector>(pawn, "Velocity", v);
     }
+  } else if (cmd == "spawnat") {  // spawnat <Class> <portal i>: drop an actor onto portal i (enemy teleport test)
+    char cls[128] = {0};
+    int i = 0;
+    sscanf(arg.c_str(), "%127s %d", cls, &i);
+    void* pawn = local_pawn();
+    if (pawn && g_p[i].open) {
+      void* a = Call(pawn, "Spawn").arg("SpawnClass", find_class(cls)).arg("SpawnLocation", g_p[i].loc + g_p[i].n * 120.f)
+                    .arg_bool("bNoCollisionFail", true).go().ret<void*>();
+      mlog("spawned %s", a ? full_name(a).c_str() : "nothing");
+    }
+  } else if (cmd == "place") {  // place <hex> <portal i>: put an actor right over portal i (tests)
+    unsigned long long a = 0;
+    int i = 0;
+    sscanf(arg.c_str(), "%llx %d", &a, &i);
+    if (a && g_p[i].open)
+      mlog("place ok=%d", Call((void*)a, "SetLocation").arg("NewLocation", g_p[i].loc + g_p[i].n * (extent_along((void*)a, g_p[i].n) + 4)).go().ret_bool());
+  } else if (cmd == "kill") {  // kill <hex>: destroy one actor
+    void* a = (void*)strtoull(arg.c_str(), nullptr, 16);
+    if (a) Call(a, "Destroy").go();
   } else if (cmd == "walk") {  // walk <x y z>: push the pawn with a velocity (tests)
     FVector v{};
     sscanf(arg.c_str(), "%f %f %f", &v.X, &v.Y, &v.Z);
