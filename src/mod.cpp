@@ -1237,6 +1237,8 @@ static void tick(float dt) {
   if (void* pi = get<void*>(pc, "PlayerInput")) H->hook_input(&(*(void***)pi)[78]);
   update_gun();
   if (wi) update_doors(get<float>(wi, "TimeSeconds"));
+  if (void* hero = local_pawn())  // unlimited camcorder battery (charge of the current battery, 0..1)
+    if (is_a(hero, find_class("OLHero"))) set<float>(hero, "CurrentBatterySetEnergy", 1.f);
   if (wi && (g_p[0].open || g_p[1].open)) { update_views(); animate_portals(dt); }
   if (!wi || !g_p[0].open || !g_p[1].open) return;
   float now = get<float>(wi, "TimeSeconds");

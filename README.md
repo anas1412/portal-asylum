@@ -17,6 +17,7 @@ Nothing from either game is shipped.
 | Middle mouse | Camcorder (the gun hides while it's up) |
 | F | Night vision (unchanged) |
 | Left mouse on any door | Opens it: locked and barricaded doors are unlocked |
+| Middle mouse, then F | Camcorder night vision, with an unlimited battery |
 
 ## Setup (Linux)
 1. Requirements: Outlast (native Linux), Portal 2 installed (only for its files), Python 3, `uv`, `ffmpeg` and `g++`.
