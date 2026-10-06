@@ -109,6 +109,31 @@ static void set_view(void* pawn, FRotator r) {
   set<FRotator>(cam, "BaseRotation", FRotator{0, r.Yaw, 0});
 }
 
+static bool is_portal_actor(void* a);
+// First solid hit along start->end through the actor trace (some walls are StaticMeshCollectionActor pieces the plain
+// world trace misses). Skips ghosts: triggers and hidden volumes (a trace that starts inside one keeps hitting it at
+// the start, so jump ahead), pawns, and the portals themselves.
+static Hit trace_solid(void* src, FVector start, FVector end) {
+  FVector dir = norm(end - start);
+  void* pawn_cls = find_class("Pawn");
+  for (int k = 0; k < 64; ++k) {
+    Hit h = trace(src, start, end, true);
+    if (!h.ok) return h;
+    bool ghost = get_bool(h.actor, "bHidden") || !get_bool(h.actor, "bBlockActors") || is_a(h.actor, pawn_cls) ||
+                 is_portal_actor(h.actor);
+    if (!ghost || name_is(obj_class(h.actor), find_name("WorldInfo"))) return h;
+    start = h.loc + dir * (len(h.loc - start) < 1 ? 32.f : 2.f);
+    if (dot(end - start, dir) <= 0) break;
+  }
+  return Hit{};
+}
+// level geometry only (movers and props count as a miss)
+static Hit trace_world(void* src, FVector start, FVector end) {
+  Hit h = trace_solid(src, start, end);
+  if (h.ok && !get_bool(h.actor, "bWorldGeometry") && !name_is(obj_class(h.actor), find_name("WorldInfo"))) h.ok = false;
+  return h;
+}
+
 // ---------------------------------------------------------------- portal resources (created once, rooted)
 struct FLinearColor { float R, G, B, A; };
 struct Portal {
@@ -242,6 +267,11 @@ static void place_mesh(void* a, FVector loc, FRotator rot, FVector size) {
   Call(a, "SetHidden").arg_bool("bNewHidden", false).go();
 }
 
+static bool is_portal_actor(void* a) {
+  for (auto& p : g_p) if (a && (a == p.surf || a == p.frame)) return true;
+  return false;
+}
+
 static void forget_portals() {
   for (auto& p : g_p) p = Portal();
   for (int i = 0; i < 2; ++i) { g_cap[i] = nullptr; g_showing_view[i] = false; }
@@ -340,8 +370,10 @@ static bool surface_ok(void* pawn, FVector c, FVector n, FVector right, FVector 
     for (int sr = -1; sr <= 1; sr += 2)
       for (int su = -1; su <= 1; su += 2) {
         FVector p = c + right * (sr * PW * 0.5f) + up * (su * PH * 0.5f);
-        Hit h = trace(pawn, p + n * 14, p - n * 14);
+        Hit h = trace_world(pawn, p + n * 14, p - n * 14);
         if (!h.ok || std::fabs(dot(h.loc - c, n)) > 10 || dot(h.n, n) < 0.8f) {  // brick, trim, uneven floors are fine
+          if (it == 0) mlog("  corner %+d %+d: %s depth %.1f ndot %.2f %s", sr, su, h.ok ? "hit" : "MISS",
+                            h.ok ? dot(h.loc - c, n) : 0.f, h.ok ? dot(h.n, n) : 0.f, h.ok ? obj_name(obj_class(h.actor)).c_str() : "");
           bad = true;
           shift = shift - right * (sr * 8.f) - up * (su * 8.f);
         }
@@ -363,7 +395,7 @@ static bool see_through(void* pawn, const Hit& h, FVector dir) {
   for (const char* k : keys)
     if (a.find(k) != std::string::npos) { mlog("  shot passes through %s", a.c_str()); return true; }
   // thin: tracing back from a little past the hit finds the far side within a few units
-  Hit back = trace(pawn, h.loc + dir * 14, h.loc + dir * 0.5f);
+  Hit back = trace_world(pawn, h.loc + dir * 14, h.loc + dir * 0.5f);
   if (back.ok && len(back.loc - h.loc) < 12) { mlog("  shot passes through thin %s", a.c_str()); return true; }
   mlog("  shot hit %s", a.c_str());
   return false;
@@ -379,15 +411,12 @@ static void fire(int i) {
   g_recoil = 1;
   Hit h;
   FVector from = eye;
-  void* pawn_cls = find_class("Pawn");
   for (int k = 0; k < 10; ++k) {  // shots fly through gates, fences, grates, glass, people and the portals themselves
-    h = trace(pawn, from, eye + dir * 30000, true);
+    h = trace_solid(pawn, from, eye + dir * 30000);
     if (!h.ok) break;
-    bool ours = false;
-    for (auto& p : g_p) ours |= h.actor == p.surf || h.actor == p.frame;
-    bool ghost = get_bool(h.actor, "bHidden") || !get_bool(h.actor, "bBlockActors");  // triggers, volumes, clip
-    if (ours || ghost || is_a(h.actor, pawn_cls) || see_through(pawn, h, dir)) { from = h.loc + dir * 4; continue; }
-    if (!get_bool(h.actor, "bWorldGeometry")) {  // doors, props, movers: Portal 2 won't put a portal on those
+    if (see_through(pawn, h, dir)) { from = h.loc + dir * 4; continue; }
+    bool world = get_bool(h.actor, "bWorldGeometry") || name_is(obj_class(h.actor), find_name("WorldInfo"));
+    if (!world) {  // doors, props, movers: Portal 2 won't put a portal on those
       snd::play("invalid", 0.5f);
       mlog("fire %d: hit movable %s", i, obj_name(obj_class(h.actor)).c_str());
       return;
@@ -395,13 +424,15 @@ static void fire(int i) {
     break;
   }
   if (!h.ok) { snd::play("invalid", 0.5f); mlog("fire %d: nothing hit (eye %.0f %.0f %.0f dir %.2f %.2f %.2f)", i, eye.X, eye.Y, eye.Z, dir.X, dir.Y, dir.Z); return; }
+  mlog("  aim hit %s (%s) at %.0f %.0f %.0f n %.2f %.2f %.2f", obj_name(obj_class(h.actor)).c_str(), h.mat ? obj_name(h.mat).c_str() : "-",
+       h.loc.X, h.loc.Y, h.loc.Z, h.n.X, h.n.Y, h.n.Z);
   FVector n = norm(h.n), up;
   if (std::fabs(n.Z) < 0.7f) up = norm(FVector{0, 0, 1} - n * n.Z);
   else up = norm(dir - n * dot(dir, n));
   FVector right = cross(up, n), c, at = h.loc;
   if (std::fabs(n.Z) < 0.7f) {  // wall: if the portal's bottom ends up a little above a floor, sit it on the floor
     FVector bottom = at - FVector{0, 0, PH * 0.5f} + n * 20;
-    Hit f = trace(pawn, bottom + FVector{0, 0, 40}, bottom - FVector{0, 0, 120});
+    Hit f = trace_world(pawn, bottom + FVector{0, 0, 40}, bottom - FVector{0, 0, 120});
     if (f.ok && f.n.Z > 0.7f) {
       float gap = bottom.Z - f.loc.Z;
       if (gap > -40 && gap < 110) at.Z -= gap - 1;
@@ -497,7 +528,7 @@ static void try_teleport(void* pawn, float now) {
         float a = (k % 2 ? 1 : -1) * ((k + 1) / 2) * 3.14159265f / 4;
         FVector d{hdir.X * std::cos(a) - hdir.Y * std::sin(a), hdir.X * std::sin(a) + hdir.Y * std::cos(a), 0};
         FVector p = B.loc + d * side + B.n * (eB + 12);
-        if (trace(pawn, B.loc + B.n * (eB + 12), p).ok) continue;  // wall in the way
+        if (trace_world(pawn, B.loc + B.n * (eB + 12), p).ok) continue;  // wall in the way
         placed = Call(pawn, "SetLocation").arg("NewLocation", p).go().ret_bool();
       }
     }
