@@ -479,10 +479,15 @@ static void fire(int i) {
   g_recoil = 1;
   Hit h;
   FVector from = eye;
+  Hit first_thin{};  // a thin surface we flew through: the target if nothing solid is behind it (ceiling panels)
   for (int k = 0; k < 10; ++k) {  // shots fly through gates, fences, grates, glass, people and the portals themselves
     h = trace_solid(pawn, from, eye + dir * 30000);
     if (!h.ok) break;
-    if (see_through(pawn, h, dir)) { from = h.loc + dir * 4; continue; }
+    if (see_through(pawn, h, dir)) {
+      if (!first_thin.ok && get_bool(h.actor, "bWorldGeometry")) first_thin = h;
+      from = h.loc + dir * 4;
+      continue;
+    }
     bool world = get_bool(h.actor, "bWorldGeometry") || name_is(obj_class(h.actor), find_name("WorldInfo"));
     if (!world) {  // doors, props, movers: Portal 2 won't put a portal on those
       snd::play("invalid", 0.5f);
@@ -493,6 +498,7 @@ static void fire(int i) {
   }
   bool visual = false;
   if (!h.ok) { h = visual_trace(pawn, from, eye + dir * 5000); visual = h.ok; }  // nearby only: no portals on far skylines
+  if (!h.ok && first_thin.ok) { h = first_thin; visual = true; mlog("  nothing behind the thin surface: using it"); }
   if (!h.ok) { snd::play("invalid", 0.5f); mlog("fire %d: nothing hit (eye %.0f %.0f %.0f dir %.2f %.2f %.2f)", i, eye.X, eye.Y, eye.Z, dir.X, dir.Y, dir.Z); return; }
   mlog("  aim hit %s (%s) at %.0f %.0f %.0f n %.2f %.2f %.2f", obj_name(obj_class(h.actor)).c_str(), h.mat ? obj_name(h.mat).c_str() : "-",
        h.loc.X, h.loc.Y, h.loc.Z, h.n.X, h.n.Y, h.n.Z);
