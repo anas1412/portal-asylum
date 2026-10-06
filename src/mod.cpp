@@ -113,10 +113,14 @@ struct FLinearColor { float R, G, B, A; };
 struct Portal {
   bool open = false;
   FVector loc{}, n{}, right{}, up{};
+  FRotator rot{};
+  float age = 1;  // seconds since placed (drives the opening animation)
   void* surf = nullptr;   // DynamicSMActor_Spawnable showing the portal surface
   void* frame = nullptr;  // slightly larger rim behind it, in the portal's colour
 };
 static Portal g_p[2];
+static float g_recoil;            // 1 right after a shot, decays to 0
+static float g_fps_acc, g_fps_n;  // frame-rate measurement ("fps" command)
 static void* g_world;
 static void *g_cube, *g_emissive, *g_rim_mic[2], *g_surf_mic[2];
 static void *g_view_rt[2], *g_view_mic[2];  // what portal i shows: the world beyond the other portal
@@ -370,6 +374,7 @@ static void fire(int i) {
   view_point(eye, rot);
   FVector dir = rot_dir(rot);
   snd::play(i ? "fire1" : "fire0", 0.6f);
+  g_recoil = 1;
   Hit h;
   FVector from = eye;
   for (int k = 0; k < 8; ++k) {  // shots fly through gates, fences, grates and glass
@@ -401,15 +406,29 @@ static void fire(int i) {
   if (!p.frame) p.frame = spawn_mesh(g_rim_mic[i]);
   if (!p.surf || !p.frame) return;
   FRotator r = basis_rot(n, right, up);
-  place_mesh(p.surf, c + n * 1.2f, r, {0.4f, PW, PH});
-  place_mesh(p.frame, c + n * 0.6f, r, {0.4f, PW + 20, PH + 26});
+  place_mesh(p.surf, c + n * 1.2f, r, {0.4f, 1, 1});  // grows open in animate_portals
+  place_mesh(p.frame, c + n * 0.6f, r, {0.4f, 1, 1});
+  p.rot = r;
+  p.age = 0;
   p.open = true; p.loc = c; p.n = n; p.right = right; p.up = up;
   snd::play(i ? "open1" : "open0", 0.55f);
   mlog("portal %d at %.0f %.0f %.0f n %.2f %.2f %.2f", i, c.X, c.Y, c.Z, n.X, n.Y, n.Z);
 }
 
+// Portal 2 portals snap open from a point: ease the size in over a fifth of a second
+static void animate_portals(float dt) {
+  for (auto& p : g_p) {
+    if (!p.open || p.age >= 0.2f || !p.surf) continue;
+    p.age = std::fmin(0.2f, p.age + dt);
+    float t = p.age / 0.2f, k = 1 - (1 - t) * (1 - t) * (1 - t);
+    Call(p.surf, "SetDrawScale3D").arg("NewScale3D", FVector{0.4f / (2 * g_cube_ext.X), PW * k / (2 * g_cube_ext.Y), PH * k / (2 * g_cube_ext.Z)}).go();
+    Call(p.frame, "SetDrawScale3D").arg("NewScale3D", FVector{0.4f / (2 * g_cube_ext.X), (PW + 20) * k / (2 * g_cube_ext.Y), (PH + 26) * k / (2 * g_cube_ext.Z)}).go();
+  }
+}
+
 // ---------------------------------------------------------------- teleport
 static std::map<void*, float> g_cooldown;
+static std::map<void*, int> g_exited;  // portal a pawn just came out of: it can't take them again until they step clear
 static float extent_along(void* pawn, FVector n) {
   void* cyl = get<void*>(pawn, "CylinderComponent");
   float r = cyl ? get<float>(cyl, "CollisionRadius") : 30, h = cyl ? get<float>(cyl, "CollisionHeight") : 80;
@@ -424,17 +443,17 @@ static void try_teleport(void* pawn, float now) {
     const Portal &A = g_p[i], &B = g_p[1 - i];
     FVector rel = loc - A.loc;
     float d = dot(rel, A.n), r = dot(rel, A.right), u = dot(rel, A.up), e = extent_along(pawn, A.n);
-    static float dbg_t = 0;
-    if (pawn == local_pawn() && d < e + 60 && std::fabs(r) < PW && now > dbg_t) {
-      dbg_t = now + 0.5f;
-      mlog("near %d: d %.0f r %.0f u %.0f e %.0f vel.n %.0f acc.n %.0f", i, d, r, u, e, dot(vel, A.n), dot(acc, A.n));
-    }
     bool floor = A.n.Z > 0.7f;
     float er = r / (PW * 0.5f), eu = u / (PH * 0.5f);
     // floor/ceiling: centre over the oval; wall: the body overlaps the opening (Outlast floors sit high on the capsule)
     float hh = PH * 0.5f, h = extent_along(pawn, FVector{0, 0, 1});
     bool inside = std::fabs(A.n.Z) > 0.7f ? er * er + eu * eu < 1
                                           : std::fabs(r) < PW * 0.5f - 12 && u > -(hh + h * 0.65f) && u < hh - h * 0.3f;
+    auto ex = g_exited.find(pawn);
+    if (ex != g_exited.end() && ex->second == i) {
+      if (inside && d < e + 60) continue;  // still standing in/over the portal it came out of
+      g_exited.erase(ex);
+    }
     if (!inside || d < -20 || d > e + 10) continue;
     bool toward = dot(vel, A.n) < -5 || dot(acc, A.n) < -5;
     if (!floor && !toward) continue;
@@ -446,7 +465,30 @@ static void try_teleport(void* pawn, float now) {
     FVector nv = through(A, B, vel);
     float s = dot(nv, B.n);
     if (s < 200) nv = nv + B.n * (200 - s);
+    void* ctrl0 = get<void*>(pawn, "Controller");
+    FVector view_out = through(A, B, rot_dir(ctrl0 ? get<FRotator>(ctrl0, "Rotation") : get<FRotator>(pawn, "Rotation")));
+    if (B.n.Z > 0.7f) {  // out of a floor portal: pop up and forward so you land beside it instead of falling back in
+      if (dot(nv, B.n) < 380) nv = nv + B.n * (380 - dot(nv, B.n));
+      FVector hdir = norm(FVector{view_out.X, view_out.Y, 0});
+      if (len(hdir) < 0.5f) hdir = B.up;
+      float hs = dot(nv, hdir);
+      if (hs < 230) nv = nv + hdir * (230 - hs);
+    }
     bool placed = false;
+    if (B.n.Z > 0.7f) {
+      // Out of a floor portal: Outlast's walking physics drops vertical speed, so there's no pop-up to fly on.
+      // Step out beside the portal instead (in the direction you face, else the first clear direction).
+      FVector hdir = norm(FVector{view_out.X, view_out.Y, 0});
+      if (len(hdir) < 0.5f) hdir = B.up;
+      float side = PW * 0.5f + extent_along(pawn, FVector{1, 0, 0}) + 20;
+      for (int k = 0; k < 8 && !placed; ++k) {
+        float a = (k % 2 ? 1 : -1) * ((k + 1) / 2) * 3.14159265f / 4;
+        FVector d{hdir.X * std::cos(a) - hdir.Y * std::sin(a), hdir.X * std::sin(a) + hdir.Y * std::cos(a), 0};
+        FVector p = B.loc + d * side + B.n * (eB + 12);
+        if (trace(pawn, B.loc + B.n * (eB + 12), p).ok) continue;  // wall in the way
+        placed = Call(pawn, "SetLocation").arg("NewLocation", p).go().ret_bool();
+      }
+    }
     for (float k = 0; k < 120 && !placed; k += 15) {
       FVector p = out + B.n * (eB + 8 + k);
       if (std::fabs(B.n.Z) < 0.7f && k > 45) p = p + FVector{0, 0, k - 45};
@@ -457,9 +499,16 @@ static void try_teleport(void* pawn, float now) {
     Call(pawn, "SetPhysics").arg<u8>("NewPhysics", 2 /*PHYS_Falling*/).go();
     void* ctrl = get<void*>(pawn, "Controller");
     FRotator cr = ctrl ? get<FRotator>(ctrl, "Rotation") : get<FRotator>(pawn, "Rotation");
-    set_view(pawn, dir_rot(through(A, B, rot_dir(cr))));
+    FRotator nr = dir_rot(through(A, B, rot_dir(cr)));
+    if (B.n.Z > 0.7f) {  // stepped out beside a floor portal: face the way you stepped, eyes level
+      FVector hd = norm(FVector{view_out.X, view_out.Y, 0});
+      if (len(hd) > 0.5f) nr = dir_rot(hd);
+      nr.Pitch = 0;
+    }
+    set_view(pawn, nr);
     if (is_a(pawn, find_class("OLHero"))) Call(pawn, "ResetAfterTeleport").go();
     g_cooldown[pawn] = now + 0.3f;
+    g_exited[pawn] = 1 - i;
     if (pawn == local_pawn()) snd::play("enter", 0.6f);
     else if (void* me = local_pawn()) {
       float dist = len(get<FVector>(me, "Location") - loc);
@@ -550,7 +599,11 @@ static void pose_gun() {
   rot_axes(g_gun_rot, gx, gy, gz);
   auto world = [&](FVector a) { return Cx * a.X + Cy * a.Y + Cz * a.Z; };
   auto in_bone = [&](FVector w) { return FVector{dot(w, Bx), dot(w, By), dot(w, Bz)}; };
-  FVector P = eye + world(g_gun_off);
+  FVector off = g_gun_off + FVector{-5.f * g_recoil, 0, 1.2f * g_recoil};
+  FRotator gr = g_gun_rot;
+  gr.Pitch += (int)(1100 * g_recoil);  // ~6 degrees of kick
+  rot_axes(gr, gx, gy, gz);
+  FVector P = eye + world(off);
   FVector rel = in_bone(P - bl);
   FRotator rr = basis_rot(in_bone(world(gx)), in_bone(world(gy)), in_bone(world(gz)));
   Call(g_gun_comp, "SetTranslation").arg("NewTranslation", rel).go();
@@ -580,6 +633,10 @@ static void update_gun() {
     g_gun_shown = true;
     pose_gun();
     mlog("gun attached to %s", obj_name(pawn).c_str());
+  }
+  if (g_recoil > 0) {
+    g_recoil = g_recoil < 0.02f ? 0 : g_recoil * 0.82f;  // per tick
+    pose_gun();
   }
   bool show = gun_ready();
   if (show != g_gun_shown) { Call(g_gun_comp, "SetHidden").arg_bool("NewHidden", !show).go(); g_gun_shown = show; }
@@ -781,6 +838,9 @@ static void run_command(const std::string& line) {
       g_gun_scale = sc;
       pose_gun();
     }
+  } else if (cmd == "fps") {  // average frame rate since the last "fps"
+    mlog("fps %.1f over %.0f frames", g_fps_n / (g_fps_acc > 0 ? g_fps_acc : 1), g_fps_n);
+    g_fps_acc = g_fps_n = 0;
   } else if (cmd == "flip") {  // flip <x> <y> <capmode>
     sscanf(arg.c_str(), "%d %d %d", &g_flipx, &g_flipy, &g_capmode);
   } else if (cmd == "approach") {  // approach <i>: stand Miles in front of portal i, moving into it (tests)
@@ -793,6 +853,13 @@ static void run_command(const std::string& line) {
       mlog("approach ok=%d", Call(pawn, "SetLocation").arg("NewLocation", p).go().ret_bool());
       set<FVector>(pawn, "Velocity", A.n * -300.f);
       set<FVector>(pawn, "Acceleration", A.n * -300.f);
+    }
+  } else if (cmd == "launch") {  // launch x y z: velocity + falling (tests whether Outlast keeps momentum)
+    FVector v{};
+    sscanf(arg.c_str(), "%f %f %f", &v.X, &v.Y, &v.Z);
+    if (void* pawn = local_pawn()) {
+      Call(pawn, "SetPhysics").arg<u8>("newPhysics", 2).go();
+      set<FVector>(pawn, "Velocity", v);
     }
   } else if (cmd == "walk") {  // walk <x y z>: push the pawn with a velocity (tests)
     FVector v{};
@@ -845,17 +912,18 @@ extern "C" void mod_unload() {
   g_log = nullptr;
 }
 
-extern "C" void mod_tick(void*, float) {
+extern "C" void mod_tick(void*, float dt) {
+  g_fps_acc += dt; g_fps_n += 1;
   static long n = 0;
   if (n++ == 0) { mlog("tick live, %d objects", Objects().Num); }
   poll_commands();
   void* pc = local_pc();
   if (!pc) return;
   void* wi = get<void*>(pc, "WorldInfo");
-  if (wi != g_world) { g_world = wi; forget_portals(); g_cooldown.clear(); mlog("world %s", wi ? obj_path(wi).c_str() : "-"); }
+  if (wi != g_world) { g_world = wi; forget_portals(); g_cooldown.clear(); g_exited.clear(); mlog("world %s", wi ? obj_path(wi).c_str() : "-"); }
   if (void* pi = get<void*>(pc, "PlayerInput")) H->hook_input(&(*(void***)pi)[78]);
   update_gun();
-  if (wi && (g_p[0].open || g_p[1].open)) update_views();
+  if (wi && (g_p[0].open || g_p[1].open)) { update_views(); animate_portals(dt); }
   if (!wi || !g_p[0].open || !g_p[1].open) return;
   float now = get<float>(wi, "TimeSeconds");
   for (void* p = get<void*>(wi, "PawnList"); p; p = get<void*>(p, "NextPawn"))
