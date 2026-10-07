@@ -1186,10 +1186,10 @@ static void run_command(const std::string& line) {
 
 static void poll_commands() {
   std::string p = run_dir() + "/cmd";
-  struct stat st;
-  if (stat(p.c_str(), &st) != 0 || st.st_size == 0) return;
   FILE* f = fopen(p.c_str(), "r+");
   if (!f) return;
+  if (fseek(f, 0, SEEK_END) != 0 || ftell(f) <= 0) { fclose(f); return; }
+  rewind(f);
   std::vector<std::string> lines;
   char buf[4096];
   while (fgets(buf, sizeof buf, f)) {

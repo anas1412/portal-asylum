@@ -46,23 +46,30 @@ Everything else is normal Outlast.
   - Steam → Outlast → Properties → Compatibility: *Force the use of a compatibility tool* must be **off**.
 - **Portal 2** on Steam. It only has to be installed, not played: the setup reads the gun model and sounds from its files. You can uninstall it after setup.
 
-### 2. Install the tools the setup needs
-| Distro | Command |
-|---|---|
-| Arch / CachyOS / Manjaro | `sudo pacman -S --needed git base-devel python ffmpeg` |
-| Debian / Ubuntu / Mint | `sudo apt install git build-essential python3 ffmpeg` |
-| Fedora | `sudo dnf install git gcc-c++ python3 ffmpeg` |
-
-### 3. Download and set up the mod
+### 2. Get the mod
+**Easiest: the prebuilt release** (no compiler needed). Download `portal-asylum-linux-x86_64.tar.gz` from the [latest release](https://github.com/anas1412/portal-asylum/releases/latest), then:
+```bash
+mkdir -p ~/portal-asylum && tar -xzf ~/Downloads/portal-asylum-linux-x86_64.tar.gz -C ~/portal-asylum
+```
+**Or build it yourself** from the source:
 ```bash
 git clone https://github.com/anas1412/portal-asylum ~/portal-asylum
 ```
+
+### 3. Run the setup
+The setup needs Python 3 and ffmpeg (and a C++ compiler, only if you build from source):
+| Distro | Command |
+|---|---|
+| Arch / CachyOS / Manjaro | `sudo pacman -S --needed python ffmpeg` (add `base-devel git` to build) |
+| Debian / Ubuntu / Mint | `sudo apt install python3 ffmpeg` (add `build-essential git` to build) |
+| Fedora | `sudo dnf install python3 ffmpeg` (add `gcc-c++ git` to build) |
+
 ```bash
 ~/portal-asylum/install.sh
 ```
 `install.sh`:
 1. finds both games in your Steam libraries
-2. builds the mod
+2. builds the mod, if you cloned the source
 3. converts the portal gun and its sounds from your Portal 2 into `cache/`
 4. prints one line to paste into Steam
 
@@ -89,9 +96,11 @@ Press **Play** on Outlast in Steam, as usual.
 The mod never changes a game file or your saves, so there's nothing else to undo.
 
 ## Update
-```bash
-cd ~/portal-asylum && git pull && ./install.sh
-```
+- **Release download:** extract the new release over the old folder, then run `~/portal-asylum/install.sh` again.
+- **Git clone:**
+  ```bash
+  cd ~/portal-asylum && git pull && ./install.sh --rebuild
+  ```
 
 ## Troubleshooting
 | Problem | Fix |
