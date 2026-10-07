@@ -8,6 +8,15 @@ The gun in Miles's hands is Portal 2's real viewmodel and the sounds are Portal 
 
 > Linux only: the native Linux version of Outlast on Steam (build 576074). Not Windows, not Proton.
 
+![Blue and orange portals in the asylum courtyard, Portal 2's gun in Miles's hands](docs/screenshots/portals.jpg)
+
+| | |
+|---|---|
+| ![An orange floor portal under a wheelchair, showing the room on the other side](docs/screenshots/floor-portal.jpg) | ![Looking down through a blue floor portal into a room below](docs/screenshots/look-through.jpg) |
+| *A floor portal under a wheelchair: you see straight through to the other side.* | *Looking down through a floor portal into the room below.* |
+| ![Portal 2's gun held in Outlast, lit by the scene](docs/screenshots/gun.jpg) | ![An orange portal showing Miles and the blue portal behind him](docs/screenshots/recursion.jpg) |
+| *Portal 2's real gun, lit by Outlast's own lights.* | *Portals see each other: Miles and the blue portal, through the orange one.* |
+
 ## Features
 - **See-through oval portals** with Portal 2 rims and an opening animation. Each portal shows a live view of the world behind the other one.
 - **Teleporting.** Walk into wall portals and fall into floor portals. Two floor portals drop you out beside the exit instead of looping.
