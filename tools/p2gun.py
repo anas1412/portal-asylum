@@ -5,7 +5,7 @@ import struct, os, sys, math
 sys.path.insert(0, os.path.dirname(__file__))
 from vpk import open_all, find
 
-OUT = os.path.expanduser('~/outlast-portal-gun/cache')
+OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'cache')
 
 def cstr(b, o):
     return b[o:b.index(b'\0', o)].decode('latin1')

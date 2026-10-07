@@ -1,6 +1,6 @@
 """Read vtables / data from OLGame.x86_64 offline. Usage: elfvt.py <vtable symbol (demangled)> [slots]"""
 import sys,struct,subprocess,re,os
-B=os.path.expanduser('~/.local/share/Steam/steamapps/common/Outlast/Binaries/Linux/OLGame.x86_64')
+B=os.environ.get('OUTLAST_BIN') or os.path.expanduser('~/.local/share/Steam/steamapps/common/Outlast/Binaries/Linux/OLGame.x86_64')
 data=open(B,'rb').read()
 segs=[]
 for l in subprocess.run(['readelf','-lW',B],capture_output=True,text=True).stdout.splitlines():

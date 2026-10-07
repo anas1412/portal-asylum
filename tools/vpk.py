@@ -1,6 +1,6 @@
 """Minimal Valve VPK (v1/v2) reader for the user's own Portal 2 install. vpk.py [substring] lists matching files."""
 import struct, os, sys
-P2 = os.path.expanduser('~/.local/share/Steam/steamapps/common/Portal 2/portal2')
+P2 = os.environ.get('P2_DIR') or os.path.expanduser('~/.local/share/Steam/steamapps/common/Portal 2/portal2')
 
 class VPK:
     def __init__(self, dirpath):

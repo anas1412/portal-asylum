@@ -1,52 +1,124 @@
-# Outlast portal gun
+# Portal Asylum
 
-Portal 2's portal gun in Outlast:
-- see-through oval portals, with momentum-safe teleporting for Miles and enemies
-- shots that pass through gates, fences, glass and people
-- the real gun model and sounds, read from your own Portal 2 install
+**Portal 2's portal gun in Outlast.**
 
-Nothing from either game is shipped.
+Shoot blue and orange portals onto the walls, floors and ceilings of Mount Massive Asylum. Look through them, and walk, fall or drop enemies and props through them.
 
-**Status:** native Linux Outlast (Steam build 576074, `OLGame.x86_64`). A Windows build is in progress.
+The gun in Miles's hands is Portal 2's real viewmodel and the sounds are Portal 2's own. Both are read from **your** Portal 2 install on your PC, so nothing from Valve or Red Barrels is shipped here.
+
+> Linux only: the native Linux version of Outlast on Steam (build 576074). Not Windows, not Proton.
+
+## Features
+- **See-through oval portals** with Portal 2 rims and an opening animation. Each portal shows a live view of the world behind the other one.
+- **Teleporting.** Walk into wall portals and fall into floor portals. Two floor portals drop you out beside the exit instead of looping.
+- **Enemies go through portals too.** Open one under or in front of a patient.
+- **Props fall in** *(experimental)*. Small objects resting on a floor portal (a wheelchair, a chair) are turned into physics objects so they can drop through.
+- **Shots work almost anywhere.**
+  - They pass through gates, fences, bars, glass, people and invisible trigger zones.
+  - They land on bumpy walls, ledges and even surfaces with no collision.
+  - Doors and moving objects refuse portals, like in Portal 2.
+- **The gun is a real in-game object**, lit by Outlast's own lights, with recoil. It's put away automatically while Miles climbs, hides, opens doors or uses the camcorder.
+- **Extras:** every locked or barricaded door opens, and the camcorder battery never runs out.
 
 ## Controls
 | Input | Action |
 |---|---|
-| Left mouse | Blue portal. Looking at a door, pickup, bed or locker? Left mouse uses it instead. |
+| Left mouse | Blue portal. When the game shows a "Press LEFT MOUSE BUTTON to…" prompt, it does that instead (doors, pickups, beds, lockers). |
 | Right mouse | Orange portal |
-| Middle mouse | Camcorder (the gun hides while it's up) |
-| F | Night vision (unchanged) |
-| Left mouse on any door | Opens it: locked and barricaded doors are unlocked |
-| Middle mouse, then F | Camcorder night vision, with an unlimited battery |
+| Middle mouse | Raise or lower the camcorder (it used to be on right mouse) |
+| F | Night vision, while the camcorder is up |
 
-## Setup (Linux)
-1. Requirements: Outlast (native Linux), Portal 2 installed (only for its files), Python 3, `uv`, `ffmpeg` and `g++`.
-2. Convert the gun and sounds from your Portal 2 install. This writes `cache/`:
+Everything else is normal Outlast.
+
+## Install
+
+### 1. Install the two games
+- **Outlast** on Steam, native Linux version.
+  - Steam → Outlast → Properties → Compatibility: *Force the use of a compatibility tool* must be **off**.
+- **Portal 2** on Steam. It only has to be installed, not played: the setup reads the gun model and sounds from its files. You can uninstall it after setup.
+
+### 2. Install the tools the setup needs
+| Distro | Command |
+|---|---|
+| Arch / CachyOS / Manjaro | `sudo pacman -S --needed git base-devel python ffmpeg` |
+| Debian / Ubuntu / Mint | `sudo apt install git build-essential python3 ffmpeg` |
+| Fedora | `sudo dnf install git gcc-c++ python3 ffmpeg` |
+
+### 3. Download and set up the mod
+```bash
+git clone https://github.com/anas1412/portal-asylum ~/portal-asylum
+```
+```bash
+~/portal-asylum/install.sh
+```
+`install.sh`:
+1. finds both games in your Steam libraries
+2. builds the mod
+3. converts the portal gun and its sounds from your Portal 2 into `cache/`
+4. prints one line to paste into Steam
+
+### 4. Add the launch option (once)
+Steam → right-click **Outlast** → **Properties** → **General** → **Launch Options**. Paste the line `install.sh` printed. It looks like this:
+```
+LD_PRELOAD="$LD_PRELOAD:/home/YOU/portal-asylum/build/libolportal.so" systemd-run --user --scope --quiet -p MemoryMax=6G -p MemorySwapMax=1G %command%
+```
+- `LD_PRELOAD` loads the mod into Outlast when it starts. It's added to Steam's own value, so the Steam overlay keeps working.
+- `systemd-run … MemoryMax=6G` runs Outlast in its own memory-limited group. If anything ever runs away, only Outlast is stopped, never your desktop.
+
+## Start
+Press **Play** on Outlast in Steam, as usual.
+- Continue your save or start a new game. The portal gun is in Miles's hands from the first moment you can move.
+- **Is it working?** You'll see the gun bottom right. The mod's log is in `~/portal-asylum/run/mod.log`.
+
+## Remove
+1. Steam → Outlast → Properties → **Launch Options**: clear the box. Outlast is back to normal.
+2. Optional: delete the mod's folder.
+   ```bash
+   rm -rf ~/portal-asylum
    ```
-   uv run --with pillow python tools/p2gun.py
-   ```
-3. Build:
-   ```
-   ./build.sh
-   ```
-4. Steam → Outlast → Properties → Launch Options:
-   ```
-   LD_PRELOAD="$LD_PRELOAD:/home/<you>/outlast-portal-gun/build/libolportal.so" systemd-run --user --scope --quiet -p MemoryMax=6G -p MemorySwapMax=1G %command%
-   ```
-   - It appends to Steam's own `LD_PRELOAD`, so the overlay keeps working.
-   - To uninstall, clear the box. No game file is ever changed.
+
+The mod never changes a game file or your saves, so there's nothing else to undo.
+
+## Update
+```bash
+cd ~/portal-asylum && git pull && ./install.sh
+```
+
+## Troubleshooting
+| Problem | Fix |
+|---|---|
+| No gun in Miles's hands | Check the launch option is pasted exactly, then look at `run/mod.log`. If there's no log at all, the mod didn't load. Make sure Outlast isn't running through Proton. |
+| `install.sh`: "not the native Linux version" | Turn off *Force the use of a compatibility tool* for Outlast, let Steam update it, and run `install.sh` again. |
+| A wall won't take a portal | Some things refuse on purpose: doors and moving objects. Anything else: open an issue with the end of `run/mod.log`, which says why each shot failed. |
+| Stuck after skipping ahead | Unlocked doors and portals can get you past a scripted scene. Reload the last checkpoint. |
+| Low FPS | The portals barely cost anything, but Outlast itself is heavy on laptops. Check your fans and temperatures. |
 
 ## How it works
-- `src/loader.cpp` (LD_PRELOAD) hooks `UOLEngine::Tick` and `PlayerInput::InputKey` through their vtable slots, plus Outlast's SDL audio callback and the buffer swap.
-  - It loads `build/libolportal_mod.so`; touch `run/reload` to hot-reload it.
-- `src/mod.cpp` drives the game through UE3's own reflection (`ue.h`: properties and functions by name, `ProcessEvent`).
-  - **Portals:** `DynamicSMActor_Spawnable` actors. The engine sphere mesh is rebuilt at runtime into a flat disc (`mesh.h`).
-  - **See-through views:** a `SceneCapture2DComponent` per portal, with an off-axis projection whose window is the exit portal.
-  - **The gun:** the engine cube mesh rebuilt with Portal 2's `v_portalgun`. It uses the camcorder's lit material and is attached to Miles's camera bone.
-- Dev loop: `./dev-run.sh` (windowed), commands appended to `run/cmd`, log in `run/mod.log`. `tools/drive.py` scripts the tests.
-- Engine offsets and gotchas are in `MODLOG.md`.
+Outlast's native Linux binary still has its C++ symbol names. Portal Asylum is an `LD_PRELOAD` library that drives the game through Unreal Engine 3's own reflection and functions.
+
+- **`src/loader.cpp`** hooks:
+  - the engine tick and player input, through vtable slots
+  - the game's SDL audio callback, to mix in Portal 2's sounds
+  - the buffer swap
+
+  It loads `build/libolportal_mod.so`, which can be hot-reloaded during development.
+- **`src/mod.cpp`**: portals, teleporting, the gun, props, doors and the battery.
+  - **Portals** are spawned actors. The engine's sphere mesh is rebuilt at runtime into a flat oval (`src/mesh.h`).
+  - **Each see-through view** is a scene capture from your eye moved through the portal pair. It uses an off-axis projection whose window is the exit portal, so the picture lines up exactly with the opening.
+  - **The gun** is Portal 2's `v_portalgun`, rebuilt into an engine mesh and attached to Miles's camera bone. It uses the camcorder's lit material.
+- **`src/ue.h`**: minimal UE3 object access (names, properties and functions by name, `ProcessEvent`).
+- **`tools/p2gun.py`**: reads Portal 2's VPK, MDL, VVD, VTX and VTF files and writes `cache/gun.bin` and `cache/sounds/`.
+- **[MODLOG.md](MODLOG.md)**: engine offsets, the reverse-engineering notes and every gotcha hit along the way.
+
+### Development
+- `./dev-run.sh` starts Outlast windowed with the mod.
+- Commands appended to `run/cmd` run inside the game (`info`, `fire 0`, `shot name`, `objs <text>`, `props <addr>`, …). `tools/drive.py` scripts them.
+- `touch run/reload` reloads the mod without restarting the game.
 
 ## Credits
-- Portal and Portal 2 are © Valve. Outlast is © Red Barrels.
-- This mod uses their files only from your own installs.
-- Built with an AI coding agent (Claude), using the [universal-modder](https://github.com/rehan-remade/universal-modder) method.
+- Portal and Portal 2 © Valve Corporation. Outlast © Red Barrels.
+- This is a fan mod, not affiliated with either. It uses their files only from your own installs.
+- Built with an AI coding agent (Claude), following the [universal-modder](https://github.com/rehan-remade/universal-modder) method.
+
+## License
+[MIT](LICENSE) for the mod's own code. Game assets belong to their owners and are not part of this repository.

@@ -45,6 +45,7 @@ static void load_mod() {
   }
   // dlopen caches by path, so load a fresh copy each time
   std::string src = std::string(g_root) + "/build/libolportal_mod.so";
+  if (access(src.c_str(), F_OK) != 0) src = std::string(g_root) + "/libolportal_mod.so";
   std::string dst = std::string(g_root) + "/run/.mod" + std::to_string(++g_gen) + ".so";
   std::string old = std::string(g_root) + "/run/.mod" + std::to_string(g_gen - 1) + ".so";
   unlink(old.c_str());
@@ -117,8 +118,13 @@ extern "C" void SDL_GL_SwapWindow(void* win) {
 __attribute__((constructor)) static void init() {
   char exe[512] = {0};
   if (readlink("/proc/self/exe", exe, sizeof exe - 1) < 0 || !strstr(exe, "OLGame.x86_64")) return;
-  const char* home = getenv("HOME");
-  snprintf(g_root, sizeof g_root, "%s/outlast-portal-gun", home ? home : "/tmp");
+  // the mod's folder: where this library lives (<root>/build/libolportal.so or <root>/libolportal.so)
+  Dl_info info{};
+  dladdr((void*)&init, &info);
+  std::string so = info.dli_fname ? info.dli_fname : "";
+  std::string dir = so.substr(0, so.find_last_of('/'));
+  if (dir.size() >= 6 && dir.compare(dir.size() - 6, 6, "/build") == 0) dir.resize(dir.size() - 6);
+  snprintf(g_root, sizeof g_root, "%s", dir.c_str());
   mkdir((std::string(g_root) + "/run").c_str(), 0755);
   g_host.root = g_root;
   g_host.hook_input = hook_input;

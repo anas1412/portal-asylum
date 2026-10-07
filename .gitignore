@@ -1,3 +1,8 @@
+# built locally
 build/
+# converted from your own Portal 2 install by install.sh: Valve's assets, never committed
+cache/
+# logs, screenshots and the reflection dump from a running game
 run/
 backups/
+__pycache__/
