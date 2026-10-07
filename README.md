@@ -8,6 +8,8 @@ The gun in Miles's hands is Portal 2's real viewmodel and the sounds are Portal 
 
 > Linux only: the native Linux version of Outlast on Steam (build 576074). Not Windows, not Proton.
 
+**Download:** [portal-asylum-linux-x86_64.tar.gz](https://github.com/anas1412/portal-asylum/releases/latest/download/portal-asylum-linux-x86_64.tar.gz), from the [latest release](https://github.com/anas1412/portal-asylum/releases/latest). Then follow [Install](#install).
+
 ![Blue and orange portals in the asylum courtyard, Portal 2's gun in Miles's hands](docs/screenshots/portals.jpg)
 
 | | |
@@ -47,7 +49,7 @@ Everything else is normal Outlast.
 - **Portal 2** on Steam. It only has to be installed, not played: the setup reads the gun model and sounds from its files. You can uninstall it after setup.
 
 ### 2. Get the mod
-**Easiest: the prebuilt release** (no compiler needed). Download `portal-asylum-linux-x86_64.tar.gz` from the [latest release](https://github.com/anas1412/portal-asylum/releases/latest), then:
+**Easiest: the prebuilt release** (no compiler needed). Download [portal-asylum-linux-x86_64.tar.gz](https://github.com/anas1412/portal-asylum/releases/latest/download/portal-asylum-linux-x86_64.tar.gz) from the [latest release](https://github.com/anas1412/portal-asylum/releases/latest), then:
 ```bash
 mkdir -p ~/portal-asylum && tar -xzf ~/Downloads/portal-asylum-linux-x86_64.tar.gz -C ~/portal-asylum
 ```
